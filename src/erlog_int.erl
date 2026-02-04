@@ -1319,6 +1319,9 @@ partial_list(Other, _) -> type_error(list, Other).
 initial_goal(Goal) -> initial_goal(Goal, new_bindings(), 0).
 
 initial_goal({'_'}, Bs, Vn) -> {{Vn},Bs,Vn+1};	%Anonymous variable
+initial_goal({N}=Var, Bs, Vn) when is_integer(N) ->
+    %% Already processed internal variable - pass through, update Vn to avoid collision
+    {Var, Bs, max(Vn, N+1)};
 initial_goal({Name}=Var0, Bs, Vn) when is_atom(Name) ->
     case get_binding(Var0, Bs) of
 	{ok,Var1} -> {Var1,Bs,Vn};
