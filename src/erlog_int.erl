@@ -314,7 +314,7 @@ prove_goal({abolish,Pi0}, Next, #est{bs=Bs,db=Db0}=St) ->
     end;
 prove_goal({assert,C0}, Next, #est{bs=Bs,db=Db0}=St) ->
     C = dderef(C0, Bs),
-    case maps:find(functor(C), Db0#db.assert_hooks) of
+    case maps:find(clause_functor(C), Db0#db.assert_hooks) of
 	{ok, {Mod, Fun}} -> Mod:Fun(assert, C, Next, St);
 	error ->
 	    Db1 = assertz_clause(C, Db0),
@@ -322,7 +322,7 @@ prove_goal({assert,C0}, Next, #est{bs=Bs,db=Db0}=St) ->
     end;
 prove_goal({asserta,C0}, Next, #est{bs=Bs,db=Db0}=St) ->
     C = dderef(C0, Bs),
-    case maps:find(functor(C), Db0#db.assert_hooks) of
+    case maps:find(clause_functor(C), Db0#db.assert_hooks) of
 	{ok, {Mod, Fun}} -> Mod:Fun(asserta, C, Next, St);
 	error ->
 	    Db1 = asserta_clause(C, Db0),
@@ -330,7 +330,7 @@ prove_goal({asserta,C0}, Next, #est{bs=Bs,db=Db0}=St) ->
     end;
 prove_goal({assertz,C0}, Next, #est{bs=Bs,db=Db0}=St) ->
     C = dderef(C0, Bs),
-    case maps:find(functor(C), Db0#db.assert_hooks) of
+    case maps:find(clause_functor(C), Db0#db.assert_hooks) of
 	{ok, {Mod, Fun}} -> Mod:Fun(assertz, C, Next, St);
 	error ->
 	    Db1 = assertz_clause(C, Db0),
@@ -1005,6 +1005,12 @@ functor(T) when ?IS_FUNCTOR(T) ->
     {element(1, T),tuple_size(T)-1};
 functor(T) when is_atom(T) -> {T,0};
 functor(T) -> type_error(callable, T).
+
+%% clause_functor(Clause) -> {Name,Arity}.
+%%  Extract the head functor from a clause. For rules ':-'(Head,Body),
+%%  returns functor(Head). For facts, returns functor(Fact).
+clause_functor({':-',H,_B}) -> functor(H);
+clause_functor(C) -> functor(C).
 
 %% well_form_body(Body, HasCutAfter, CutLabel) -> {Body,HasCut}.
 %% well_form_body(Body, Tail, HasCutAfter, CutLabel) -> {Body,HasCut}.
