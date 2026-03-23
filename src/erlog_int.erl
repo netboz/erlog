@@ -144,6 +144,7 @@
 -export([add_built_in/2,add_compiled_proc/4]).
 -export([asserta_clause/2,assertz_clause/2]).
 -export([retract_clause/3,abolish_clauses/2]).
+-export([prove_goal_clauses/4]).
 
 %% Error types.
 -export([erlog_error/1,erlog_error/2,type_error/2,type_error/3,
@@ -313,16 +314,28 @@ prove_goal({abolish,Pi0}, Next, #est{bs=Bs,db=Db0}=St) ->
     end;
 prove_goal({assert,C0}, Next, #est{bs=Bs,db=Db0}=St) ->
     C = dderef(C0, Bs),
-    Db1 = assertz_clause(C, Db0),
-    prove_body(Next, St#est{db=Db1});
+    case maps:find(clause_functor(C), Db0#db.assert_hooks) of
+	{ok, {Mod, Fun}} -> Mod:Fun(assert, C, Next, St);
+	error ->
+	    Db1 = assertz_clause(C, Db0),
+	    prove_body(Next, St#est{db=Db1})
+    end;
 prove_goal({asserta,C0}, Next, #est{bs=Bs,db=Db0}=St) ->
     C = dderef(C0, Bs),
-    Db1 = asserta_clause(C, Db0),
-    prove_body(Next, St#est{db=Db1});
+    case maps:find(clause_functor(C), Db0#db.assert_hooks) of
+	{ok, {Mod, Fun}} -> Mod:Fun(asserta, C, Next, St);
+	error ->
+	    Db1 = asserta_clause(C, Db0),
+	    prove_body(Next, St#est{db=Db1})
+    end;
 prove_goal({assertz,C0}, Next, #est{bs=Bs,db=Db0}=St) ->
     C = dderef(C0, Bs),
-    Db1 = assertz_clause(C, Db0),
-    prove_body(Next, St#est{db=Db1});
+    case maps:find(clause_functor(C), Db0#db.assert_hooks) of
+	{ok, {Mod, Fun}} -> Mod:Fun(assertz, C, Next, St);
+	error ->
+	    Db1 = assertz_clause(C, Db0),
+	    prove_body(Next, St#est{db=Db1})
+    end;
 prove_goal({retract,C0}, Next, #est{bs=Bs}=St) ->
     C = dderef(C0, Bs),
     prove_retract(C, Next, St);
@@ -437,6 +450,8 @@ fail([#cp{type=clause}=Cp|Cps], St) ->
     fail_clause(Cp, Cps, St);
 fail([#cp{type=retract}=Cp|Cps], St) ->
     fail_retract(Cp, Cps, St);
+fail([#cp{type=retract_hooked}=Cp|Cps], St) ->
+    fail_retract_hooked(Cp, Cps, St);
 fail([#cp{type=current_predicate}=Cp|Cps], St) ->
     fail_current_predicate(Cp, Cps, St);
 fail([#cp{type=findall}=Cp|Cps], St) ->
@@ -650,7 +665,13 @@ prove_retract(H, Next, St) ->
 prove_retract(H, B, Next, #est{db=Db}=St) ->
     Functor = functor(H),
     case get_procedure(Functor, Db) of
-	{clauses,Cs} -> retract_clauses(H, B, Cs, Next, St);
+	{clauses,Cs} ->
+	    case maps:find(Functor, Db#db.retract_hooks) of
+		{ok, {Mod, Fun}} ->
+		    retract_clauses_hooked(H, B, Cs, Next, St, Mod, Fun);
+		error ->
+		    retract_clauses(H, B, Cs, Next, St)
+	    end;
 	{code,_} ->
 	    permission_error(modify, static_procedure, pred_ind(Functor), St);
 	built_in ->
@@ -675,6 +696,27 @@ retract_clauses(_Ch, _Cb, [], _Next, St) -> ?FAIL(St).
 
 fail_retract(#cp{data={Ch,Cb,Cs},next=Next,bs=Bs,vn=Vn}, Cps, St) ->
     retract_clauses(Ch, Cb, Cs, Next, St#est{cps=Cps,bs=Bs,vn=Vn}).
+
+fail_retract_hooked(#cp{data={Ch,Cb,Cs,Mod,Fun},next=Next,bs=Bs,vn=Vn}, Cps, St) ->
+    retract_clauses_hooked(Ch, Cb, Cs, Next, St#est{cps=Cps,bs=Bs,vn=Vn}, Mod, Fun).
+
+%% retract_clauses_hooked - Like retract_clauses but delegates to hook
+%% after finding a matching clause. Hook handles retract + lifecycle.
+%% Uses retract_hooked CP type so backtracking resumes through the
+%% hooked path (not the default retract_clauses).
+retract_clauses_hooked(Ch, Cb, [C|Cs], Next,
+		       #est{cps=Cps,bs=Bs0,vn=Vn0}=St, Mod, Fun) ->
+    case unify_clause(Ch, Cb, C, Bs0, Vn0) of
+	{succeed,Bs1,Vn1} ->
+	    Cp = #cp{type=retract_hooked,
+		     data={Ch,Cb,Cs,Mod,Fun},
+		     next=Next,bs=Bs0,vn=Vn0},
+	    Mod:Fun(retract, Ch, element(1, C), Next,
+		    St#est{cps=[Cp|Cps],bs=Bs1,vn=Vn1});
+	fail ->
+	    retract_clauses_hooked(Ch, Cb, Cs, Next, St, Mod, Fun)
+    end;
+retract_clauses_hooked(_Ch, _Cb, [], _Next, St, _Mod, _Fun) -> ?FAIL(St).
 
 %% prove_findall(Term, Goal, List, Next, State) ->
 %%     void.
@@ -972,6 +1014,12 @@ functor(T) when ?IS_FUNCTOR(T) ->
     {element(1, T),tuple_size(T)-1};
 functor(T) when is_atom(T) -> {T,0};
 functor(T) -> type_error(callable, T).
+
+%% clause_functor(Clause) -> {Name,Arity}.
+%%  Extract the head functor from a clause. For rules ':-'(Head,Body),
+%%  returns functor(Head). For facts, returns functor(Fact).
+clause_functor({':-',H,_B}) -> functor(H);
+clause_functor(C) -> functor(C).
 
 %% well_form_body(Body, HasCutAfter, CutLabel) -> {Body,HasCut}.
 %% well_form_body(Body, Tail, HasCutAfter, CutLabel) -> {Body,HasCut}.
