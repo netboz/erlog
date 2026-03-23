@@ -450,6 +450,8 @@ fail([#cp{type=clause}=Cp|Cps], St) ->
     fail_clause(Cp, Cps, St);
 fail([#cp{type=retract}=Cp|Cps], St) ->
     fail_retract(Cp, Cps, St);
+fail([#cp{type=retract_hooked}=Cp|Cps], St) ->
+    fail_retract_hooked(Cp, Cps, St);
 fail([#cp{type=current_predicate}=Cp|Cps], St) ->
     fail_current_predicate(Cp, Cps, St);
 fail([#cp{type=findall}=Cp|Cps], St) ->
@@ -695,13 +697,20 @@ retract_clauses(_Ch, _Cb, [], _Next, St) -> ?FAIL(St).
 fail_retract(#cp{data={Ch,Cb,Cs},next=Next,bs=Bs,vn=Vn}, Cps, St) ->
     retract_clauses(Ch, Cb, Cs, Next, St#est{cps=Cps,bs=Bs,vn=Vn}).
 
+fail_retract_hooked(#cp{data={Ch,Cb,Cs,Mod,Fun},next=Next,bs=Bs,vn=Vn}, Cps, St) ->
+    retract_clauses_hooked(Ch, Cb, Cs, Next, St#est{cps=Cps,bs=Bs,vn=Vn}, Mod, Fun).
+
 %% retract_clauses_hooked - Like retract_clauses but delegates to hook
 %% after finding a matching clause. Hook handles retract + lifecycle.
+%% Uses retract_hooked CP type so backtracking resumes through the
+%% hooked path (not the default retract_clauses).
 retract_clauses_hooked(Ch, Cb, [C|Cs], Next,
 		       #est{cps=Cps,bs=Bs0,vn=Vn0}=St, Mod, Fun) ->
     case unify_clause(Ch, Cb, C, Bs0, Vn0) of
 	{succeed,Bs1,Vn1} ->
-	    Cp = #cp{type=retract,data={Ch,Cb,Cs},next=Next,bs=Bs0,vn=Vn0},
+	    Cp = #cp{type=retract_hooked,
+		     data={Ch,Cb,Cs,Mod,Fun},
+		     next=Next,bs=Bs0,vn=Vn0},
 	    Mod:Fun(retract, Ch, element(1, C), Next,
 		    St#est{cps=[Cp|Cps],bs=Bs1,vn=Vn1});
 	fail ->
