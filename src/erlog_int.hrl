@@ -34,7 +34,9 @@
 	     }).
 -record(db, {mod,				%Database module
 	     ref,				%Database reference
-	     loc				%Local database
+	     loc,				%Local database
+	     assert_hooks = #{} :: map(),	%#{Functor => {Mod, Fun}}
+	     retract_hooks = #{} :: map()	%#{Functor => {Mod, Fun}}
 	    }).
 
 %% Define the choice point record.
