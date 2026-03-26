@@ -144,6 +144,7 @@
 -export([add_built_in/2,add_compiled_proc/4]).
 -export([asserta_clause/2,assertz_clause/2]).
 -export([retract_clause/3,abolish_clauses/2]).
+%% Clause retrieval (used by external predicates for selective retraction).
 -export([get_procedure/2]).
 
 %% Error types.
