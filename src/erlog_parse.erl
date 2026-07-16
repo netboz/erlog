@@ -296,8 +296,9 @@ infix_op('<') -> {yes,699,700,699};		%xfx 700
 infix_op('=<') -> {yes,699,700,699};		%xfx 700
 infix_op('>') -> {yes,699,700,699};		%xfx 700
 infix_op('>=') -> {yes,699,700,699};		%xfx 700
-infix_op(':') -> {yes,599,600,600};		%xfy 600
-infix_op('::') -> {yes,599,600,599};		%xfx 600 - cross-ontology call
+infix_op(':') -> {yes,599,600,600};		%xfy 600 - belongs-to (name qualifier)
+infix_op('::') -> {yes,649,650,649};		%xfx 650 - ask (cross-ontology call); binds
+						%looser than ':' so a:b::g = (a:b)::g
 infix_op('+') -> {yes,500,500,499};		%yfx 500
 infix_op('-') -> {yes,500,500,499};		%yfx 500
 infix_op('/\\') -> {yes,500,500,499};		%yfx 500
