@@ -144,6 +144,7 @@
 -export([add_built_in/2,add_compiled_proc/4]).
 -export([asserta_clause/2,assertz_clause/2]).
 -export([retract_clause/3,abolish_clauses/2]).
+-export([prove_goal_clauses/4]).
 
 %% Error types.
 -export([erlog_error/1,erlog_error/2,type_error/2,type_error/3,
@@ -151,7 +152,7 @@
 	 permission_error/3,permission_error/4,
 	 existence_error/3,domain_error/3]).
 
--compile(export_all).
+%%-compile(export_all).
 
 -import(lists, [map/2,foldl/3,foldr/3,mapfoldr/3]).
 
@@ -313,16 +314,28 @@ prove_goal({abolish,Pi0}, Next, #est{bs=Bs,db=Db0}=St) ->
     end;
 prove_goal({assert,C0}, Next, #est{bs=Bs,db=Db0}=St) ->
     C = dderef(C0, Bs),
-    Db1 = assertz_clause(C, Db0),
-    prove_body(Next, St#est{db=Db1});
+    case maps:find(clause_functor(C), Db0#db.assert_hooks) of
+	{ok, {Mod, Fun}} -> Mod:Fun(assert, C, Next, St);
+	error ->
+	    Db1 = assertz_clause(C, Db0),
+	    prove_body(Next, St#est{db=Db1})
+    end;
 prove_goal({asserta,C0}, Next, #est{bs=Bs,db=Db0}=St) ->
     C = dderef(C0, Bs),
-    Db1 = asserta_clause(C, Db0),
-    prove_body(Next, St#est{db=Db1});
+    case maps:find(clause_functor(C), Db0#db.assert_hooks) of
+	{ok, {Mod, Fun}} -> Mod:Fun(asserta, C, Next, St);
+	error ->
+	    Db1 = asserta_clause(C, Db0),
+	    prove_body(Next, St#est{db=Db1})
+    end;
 prove_goal({assertz,C0}, Next, #est{bs=Bs,db=Db0}=St) ->
     C = dderef(C0, Bs),
-    Db1 = assertz_clause(C, Db0),
-    prove_body(Next, St#est{db=Db1});
+    case maps:find(clause_functor(C), Db0#db.assert_hooks) of
+	{ok, {Mod, Fun}} -> Mod:Fun(assertz, C, Next, St);
+	error ->
+	    Db1 = assertz_clause(C, Db0),
+	    prove_body(Next, St#est{db=Db1})
+    end;
 prove_goal({retract,C0}, Next, #est{bs=Bs}=St) ->
     C = dderef(C0, Bs),
     prove_retract(C, Next, St);
@@ -437,6 +450,8 @@ fail([#cp{type=clause}=Cp|Cps], St) ->
     fail_clause(Cp, Cps, St);
 fail([#cp{type=retract}=Cp|Cps], St) ->
     fail_retract(Cp, Cps, St);
+fail([#cp{type=retract_hooked}=Cp|Cps], St) ->
+    fail_retract_hooked(Cp, Cps, St);
 fail([#cp{type=current_predicate}=Cp|Cps], St) ->
     fail_current_predicate(Cp, Cps, St);
 fail([#cp{type=findall}=Cp|Cps], St) ->
@@ -650,7 +665,13 @@ prove_retract(H, Next, St) ->
 prove_retract(H, B, Next, #est{db=Db}=St) ->
     Functor = functor(H),
     case get_procedure(Functor, Db) of
-	{clauses,Cs} -> retract_clauses(H, B, Cs, Next, St);
+	{clauses,Cs} ->
+	    case maps:find(Functor, Db#db.retract_hooks) of
+		{ok, {Mod, Fun}} ->
+		    retract_clauses_hooked(H, B, Cs, Next, St, Mod, Fun);
+		error ->
+		    retract_clauses(H, B, Cs, Next, St)
+	    end;
 	{code,_} ->
 	    permission_error(modify, static_procedure, pred_ind(Functor), St);
 	built_in ->
@@ -676,6 +697,27 @@ retract_clauses(_Ch, _Cb, [], _Next, St) -> ?FAIL(St).
 fail_retract(#cp{data={Ch,Cb,Cs},next=Next,bs=Bs,vn=Vn}, Cps, St) ->
     retract_clauses(Ch, Cb, Cs, Next, St#est{cps=Cps,bs=Bs,vn=Vn}).
 
+fail_retract_hooked(#cp{data={Ch,Cb,Cs,Mod,Fun},next=Next,bs=Bs,vn=Vn}, Cps, St) ->
+    retract_clauses_hooked(Ch, Cb, Cs, Next, St#est{cps=Cps,bs=Bs,vn=Vn}, Mod, Fun).
+
+%% retract_clauses_hooked - Like retract_clauses but delegates to hook
+%% after finding a matching clause. Hook handles retract + lifecycle.
+%% Uses retract_hooked CP type so backtracking resumes through the
+%% hooked path (not the default retract_clauses).
+retract_clauses_hooked(Ch, Cb, [C|Cs], Next,
+		       #est{cps=Cps,bs=Bs0,vn=Vn0}=St, Mod, Fun) ->
+    case unify_clause(Ch, Cb, C, Bs0, Vn0) of
+	{succeed,Bs1,Vn1} ->
+	    Cp = #cp{type=retract_hooked,
+		     data={Ch,Cb,Cs,Mod,Fun},
+		     next=Next,bs=Bs0,vn=Vn0},
+	    Mod:Fun(retract, Ch, element(1, C), Next,
+		    St#est{cps=[Cp|Cps],bs=Bs1,vn=Vn1});
+	fail ->
+	    retract_clauses_hooked(Ch, Cb, Cs, Next, St, Mod, Fun)
+    end;
+retract_clauses_hooked(_Ch, _Cb, [], _Next, St, _Mod, _Fun) -> ?FAIL(St).
+
 %% prove_findall(Term, Goal, List, Next, State) ->
 %%     void.
 %%  Do findall on Goal and return list of each Term in List. We keep a
@@ -699,10 +741,14 @@ prove_findall(T, G, L0, Next, #est{cps=Cps,bs=Bs,vn=Vn,db=Db0}=St) ->
 	prove_body(Body, St#est{cps=[Cp|Cps],vn=Vn+1,db=Db1})
     catch
 	throw:{erlog_error,E,#est{db=Dba}=Sta} ->
-	    [_|Locsa] = Dba#db.loc,		%Pop the local list
-	    Dbb = Dba#db{loc=Locsa},
-	    %% Dbb = Dba#db{loc=tl(Db#db.loc)},
-	    erlog_error(E, Sta#est{db=Dbb})
+	    case Dba#db.loc of %Pop the local list
+		[_|Locsa] ->
+		    Dbb = Dba#db{loc=Locsa},
+		    %% Dbb = Dba#db{loc=tl(Db#db.loc)},
+		    erlog_error(E, Sta#est{db=Dbb});
+		_ ->
+		    erlog_error(E, Sta)
+	    end
     end.
 
 fail_findall(#cp{next=Next,data=List,bs=Bs,vn=Vn0}, Cps, #est{db=Db0}=St) ->
@@ -969,6 +1015,12 @@ functor(T) when ?IS_FUNCTOR(T) ->
 functor(T) when is_atom(T) -> {T,0};
 functor(T) -> type_error(callable, T).
 
+%% clause_functor(Clause) -> {Name,Arity}.
+%%  Extract the head functor from a clause. For rules ':-'(Head,Body),
+%%  returns functor(Head). For facts, returns functor(Fact).
+clause_functor({':-',H,_B}) -> functor(H);
+clause_functor(C) -> functor(C).
+
 %% well_form_body(Body, HasCutAfter, CutLabel) -> {Body,HasCut}.
 %% well_form_body(Body, Tail, HasCutAfter, CutLabel) -> {Body,HasCut}.
 %%  Check that Body is well-formed, flatten conjunctions, fix cuts and
@@ -1210,23 +1262,39 @@ pred_ind({N,A}) -> {'/',N,A}.
 pred_ind(N, A) -> {'/',N,A}.
 
 %% Bindings
-%% Bindings are kept in a dict where the key is the variable name.
+%% Bindings are kept in a map/dict where the key is the variable name.
+
+-ifdef(HAS_MAPS).
+
+-define(NEW_BINDINGS(), maps:new()).
+-define(ADD_BINDING(V, Val, Bs), maps:put(V, Val, Bs)).
+%%-define(ADD_BINDING(V, Val, Bs),
+%%	begin is_integer(V) orelse io:write(V), maps:put(V, Val, Bs) end).
+-define(GET_BINDING(V, BS), maps:find(V, Bs)).
+
+-else.
+
 %%-define(BIND, orddict).
 -define(BIND, dict).
+-define(NEW_BINDINGS(), ?BIND:new()).
+-define(ADD_BINDING(V, Val, Bs), ?BIND:store(V, Val, Bs)).
+-define(GET_BINDING(V, BS), ?BIND:find(V, Bs)).
 
-new_bindings() -> ?BIND:new().
+-endif.
 
-add_binding({V}, Val, Bs0) ->
-    ?BIND:store(V, Val, Bs0).
+new_bindings() -> ?NEW_BINDINGS().
+
+add_binding({V}, Val, Bs) ->
+    ?ADD_BINDING(V, Val, Bs).
 
 get_binding({V}, Bs) ->
-    ?BIND:find(V, Bs).
+    ?GET_BINDING(V, Bs).
 
 %% deref(Term, Bindings) -> Term.
 %% Dereference a variable, else just return the term.
 
 deref({V}=T0, Bs) ->
-    case ?BIND:find(V, Bs) of
+    case ?GET_BINDING(V, Bs) of
 	{ok,T1} -> deref(T1, Bs);
 	error -> T0
     end;
@@ -1238,7 +1306,7 @@ deref(T, _) -> T.				%Not a variable, return it.
 deref_list([], _) -> [];			%It already is a list
 deref_list([_|_]=L, _) -> L;
 deref_list({V}, Bs) ->
-    case ?BIND:find(V, Bs) of
+    case ?GET_BINDING(V, Bs) of
 	{ok,L} -> deref_list(L, Bs);
 	error -> instantiation_error()
     end;
@@ -1253,7 +1321,7 @@ dderef([], _) -> [];
 dderef([H0|T0], Bs) ->
     [dderef(H0, Bs)|dderef(T0, Bs)];
 dderef({V}=Var, Bs) ->
-    case ?BIND:find(V, Bs) of
+    case ?GET_BINDING(V, Bs) of
 	{ok,T} -> dderef(T, Bs);
 	error -> Var
     end;
@@ -1270,7 +1338,7 @@ dderef_list([], _Bs) -> [];
 dderef_list([H|T], Bs) ->
     [dderef(H, Bs)|dderef_list(T, Bs)];
 dderef_list({V}, Bs) ->
-    case ?BIND:find(V, Bs) of
+    case ?GET_BINDING(V, Bs) of
 	{ok,L} -> dderef_list(L, Bs);
 	error -> instantiation_error()
     end;
@@ -1284,7 +1352,7 @@ partial_list([H|T0], Bs) ->
     T1 = partial_list(T0, Bs),
     [H|T1];
 partial_list({V}=Var, Bs) ->
-    case ?BIND:find(V, Bs) of
+    case ?GET_BINDING(V, Bs) of
 	{ok,T} -> partial_list(T, Bs);
 	error -> Var
     end;
@@ -1299,6 +1367,9 @@ partial_list(Other, _) -> type_error(list, Other).
 initial_goal(Goal) -> initial_goal(Goal, new_bindings(), 0).
 
 initial_goal({'_'}, Bs, Vn) -> {{Vn},Bs,Vn+1};	%Anonymous variable
+initial_goal({N}=Var, Bs, Vn) when is_integer(N) ->
+    %% Already processed internal variable - pass through, update Vn to avoid collision
+    {Var, Bs, max(Vn, N+1)};
 initial_goal({Name}=Var0, Bs, Vn) when is_atom(Name) ->
     case get_binding(Var0, Bs) of
 	{ok,Var1} -> {Var1,Bs,Vn};
