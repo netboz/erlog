@@ -126,7 +126,8 @@
 -module(erlog_int).
 
 %% Main interface.
--export([new/2,prove_goal/2,fail/1]).
+-export([new/2,prove_goal/2,fail/1,
+	 add_failure_reason/2,valid_failure_reason/1,merge_failure_reasons/2]).
 
 %% Main execution functions.
 -export([prove_body/2]).
@@ -180,8 +181,90 @@ prove_goal(Goal0, St0) ->
     %% put(erlog_var, orddict:new()),
     %% Check term and build new instance of term with bindings.
     {Goal1,Bs,Vn} = initial_goal(Goal0),
-    St1 = St0#est{cps=[],bs=Bs,vn=Vn},		%Update state
+    St1 = St0#est{cps=[],bs=Bs,vn=Vn,
+		  fail_reasons=[],fail_reason_bytes=0,
+		  fail_reasons_truncated=false,
+		  fail_boundaries=0},			%Update state
     prove_body([{call,Goal1}], St1).
+
+%% add_failure_reason(Reason, State) -> State.
+%% merge_failure_reasons(Reasons, State) -> {ok,State} | error.
+%%
+%% The stack is proof-local state, deliberately not snapshotted by choicepoints:
+%% a backtracking alternative must be able to inspect the reasons that led to it.
+%% Reserve room for the truncation marker until it is present, so an omitted
+%% reason can always be represented without exceeding the total bound.
+
+add_failure_reason(fail_reasons_truncated, St) ->
+    mark_failure_reasons_truncated(St);
+add_failure_reason(Reason,
+		   #est{fail_reason_bytes=Used,
+			fail_reasons_truncated=Truncated}=St) ->
+    Size = erlang:external_size(Reason),
+    MarkerReserve = case Truncated of
+			true -> 0;
+			false -> erlang:external_size(fail_reasons_truncated)
+		    end,
+    case Size =< ?ERLOG_MAX_FAILURE_REASON_BYTES andalso
+	 Used + Size =< ?ERLOG_MAX_FAILURE_REASONS_BYTES - MarkerReserve of
+	true ->
+	    St#est{fail_reasons=[Reason|St#est.fail_reasons],
+		   fail_reason_bytes=Used+Size};
+	false ->
+	    mark_failure_reasons_truncated(St)
+    end.
+
+merge_failure_reasons(Reasons, St) when is_list(Reasons) ->
+    case valid_failure_reason_stack(Reasons, 0) of
+	true -> {ok,lists:foldr(fun add_failure_reason/2, St, Reasons)};
+	false -> error
+    end;
+merge_failure_reasons(_, _) ->
+    error.
+
+mark_failure_reasons_truncated(#est{fail_reasons_truncated=true}=St) ->
+    St;
+mark_failure_reasons_truncated(#est{fail_reasons=Reasons,
+				    fail_reason_bytes=Used}=St) ->
+    Marker = fail_reasons_truncated,
+    Size = erlang:external_size(Marker),
+    St#est{fail_reasons=[Marker|Reasons],
+	   fail_reason_bytes=Used+Size,
+	   fail_reasons_truncated=true}.
+
+valid_failure_reason(Reason) ->
+    erlog:vars_in(Reason) =:= [] andalso portable_failure_reason(Reason).
+
+valid_failure_reason_stack([Reason|Reasons], Used) ->
+    Size = erlang:external_size(Reason),
+    Size =< ?ERLOG_MAX_FAILURE_REASON_BYTES andalso
+	Used + Size =< ?ERLOG_MAX_FAILURE_REASONS_BYTES andalso
+	valid_failure_reason(Reason) andalso
+	valid_failure_reason_stack(Reasons, Used+Size);
+valid_failure_reason_stack([], _Used) -> true;
+valid_failure_reason_stack(_, _Used) -> false.
+
+portable_failure_reason(T) when is_atom(T); is_number(T); is_binary(T) -> true;
+portable_failure_reason([]) -> true;
+portable_failure_reason([H|T]) ->
+    portable_failure_reason(H) andalso portable_failure_reason(T);
+portable_failure_reason(T) when ?IS_FUNCTOR(T) ->
+    portable_failure_reason_args(T, 2, tuple_size(T));
+%% quod's atom-safe wire codec represents an atom unknown to the receiving VM
+%% as this opaque symbol. Permit it in a compound's functor position so a
+%% remote diagnostic remains portable without allocating an atom.
+portable_failure_reason(T) when is_tuple(T), tuple_size(T) >= 2 ->
+    case element(1, T) of
+	{'$quod_symbol',B} when is_binary(B) ->
+	    portable_failure_reason_args(T, 2, tuple_size(T));
+	_ -> false
+    end;
+portable_failure_reason(_) -> false.
+
+portable_failure_reason_args(_T, I, Size) when I > Size -> true;
+portable_failure_reason_args(T, I, Size) ->
+    portable_failure_reason(element(I, T)) andalso
+	portable_failure_reason_args(T, I+1, Size).
 
 %% built_in_db(Database) -> Database.
 %%  Create an initial clause database containing the built-in
@@ -221,8 +304,6 @@ built_in_db(Db0) ->
 		 %% Prolog flags
 		 {current_prolog_flag,2},
 		 {set_prolog_flag,2},
-		 %% External interface
-		 {ecall,2},
 		 %% Non-standard but useful
 		 {display,1}
 		]),
@@ -379,25 +460,6 @@ prove_goal({current_prolog_flag,F,V}, Next, St) ->
 prove_goal({set_prolog_flag,F,V}, Next, St) ->
     prove_set_prolog_flag(F, V, Next, St);
 
-%% External interface.
-prove_goal({ecall,C0,Val}, Next, #est{bs=Bs}=St) ->
-    %% Build the initial call.
-    %%io:fwrite("PG(ecall): ~p\n   ~p\n   ~p\n", [dderef(C0, Bs),Next,Cps]),
-    Efun = case dderef(C0, Bs) of
-	       {':',M,F} when is_atom(M), is_atom(F) ->
-		   fun () -> M:F() end;
-	       {':',M,{F,A}} when is_atom(M), is_atom(F) ->
-		   fun () -> M:F(A) end;
-	       {':',M,{F,A1,A2}} when is_atom(M), is_atom(F) ->
-		   fun () -> M:F(A1, A2) end;
-	       {':',M,T} when is_atom(M), ?IS_FUNCTOR(T) ->
-		   L = tuple_to_list(T),
-		   fun () -> apply(M, hd(L), tl(L)) end;
-	       Fun when is_function(Fun) -> Fun;
-	       Other -> type_error(callable, Other, St)
-	   end,
-    prove_ecall(Efun, Val, Next, St);
-
 %% Non-standard but useful.
 prove_goal({display,T}, Next, #est{bs=Bs}=St) ->
     %% A very simple display procedure.
@@ -409,20 +471,75 @@ prove_goal(G0, Next, #est{bs=Bs,db=Db}=St) ->
     G = dderef(G0, Bs),
     %%io:fwrite("PG: ~p\n    ~p\n    ~p\n", [dderef(G, Bs),Next,Cps]),
     try get_procedure(functor(G), Db) of
-	built_in -> erlog_bips:prove_goal(G, Next, St);
-	{code,{Mod,Func}} -> Mod:Func(G, Next, St);
-	{clauses,Cs} -> prove_goal_clauses(G, Cs, Next, St);
+	built_in -> erlog_bips:prove_goal(G, Next, predicate_failure_boundary(G, St));
+	{code,{Mod,Func}} -> Mod:Func(G, Next, predicate_failure_boundary(G, St));
+	{clauses,Cs} -> prove_goal_clauses(G, Cs, Next, predicate_failure_boundary(G, St));
 	undefined ->
 	    case get_prolog_flag(unknown, St) of
 		error ->			%Throw error
 		    existence_error(procedure, pred_ind(functor(G)), St);
 		_ ->				%Fail or warning
-		    ?FAIL(St)
+		    ?FAIL(add_predicate_failure_reason(G, St))
 	    end
     catch
 	throw:{erlog_error,E} ->
 	    erlog_error(E, St)	                %Add state to error
     end.
+
+%% A predicate's own alternatives sit above this boundary. Only when all of
+%% them (and every continuation they can satisfy) are exhausted does failure
+%% reach the boundary and add the call to the diagnostic stack. Store the
+%% already-dereferenced call by reference and freeze it only if the boundary is
+%% reached; successful calls therefore do not deep-copy their arguments.
+%%
+%% Boundary creation has a proof-wide cap. This bounds the extra choicepoint
+%% retention even for long deterministic recursion; reaching the cap marks the
+%% diagnostic as truncated and lets execution continue without another frame.
+%% The two diagnostic built-ins do not describe application-level failures and
+%% therefore do not frame themselves.
+predicate_failure_boundary({fail_with_reason,_Reason}, St) ->
+    St;
+predicate_failure_boundary({get_fail_reasons,_Reasons}, St) ->
+    St;
+predicate_failure_boundary(Goal,
+			   #est{cps=Cps,fail_boundaries=Count}=St) ->
+    case internal_predicate(Goal) of
+	true -> St;
+	false when Count < ?ERLOG_MAX_FAILURE_BOUNDARIES ->
+	    St#est{cps=[#cp{type=predicate_failure,data=Goal}|Cps],
+		   fail_boundaries=Count+1};
+	false ->
+	    mark_failure_reasons_truncated(St)
+    end.
+
+add_predicate_failure_reason(Goal, St) ->
+    case internal_predicate(Goal) of
+	true -> St;
+	false ->
+	    case erlang:external_size(Goal) =< ?ERLOG_MAX_FAILURE_REASON_BYTES of
+		true -> add_failure_reason(freeze_failure_term(Goal), St);
+		false -> mark_failure_reasons_truncated(St)
+	    end
+    end.
+
+%% '$'-prefixed predicates are interpreter/application plumbing, not calls a
+%% Prolog author can usefully diagnose. Their enclosing public predicate still
+%% contributes the meaningful failure frame.
+internal_predicate(Goal) ->
+    {Name,_Arity} = functor(Goal),
+    case atom_to_binary(Name, utf8) of
+	<<$$,_/binary>> -> true;
+	_ -> false
+    end.
+
+freeze_failure_term({_Variable}) -> unbound;
+freeze_failure_term([H|T]) ->
+    [freeze_failure_term(H)|freeze_failure_term(T)];
+freeze_failure_term([]) -> [];
+freeze_failure_term(T) when ?IS_FUNCTOR(T) ->
+    list_to_tuple([freeze_failure_term(E) || E <- tuple_to_list(T)]);
+freeze_failure_term(T) when is_atom(T); is_number(T); is_binary(T) -> T;
+freeze_failure_term(_) -> opaque.
 
 fail_disjunction(#cp{next=Next,bs=Bs,vn=Vn}, Cps, St) ->
     prove_body(Next, St#est{cps=Cps,bs=Bs,vn=Vn}).
@@ -458,10 +575,10 @@ fail([#cp{type=findall}=Cp|Cps], St) ->
     fail_findall(Cp, Cps, St);
 fail([#cp{type=current_prolog_flag}=Cp|Cps], St) ->
     fail_current_prolog_flag(Cp, Cps, St);
-fail([#cp{type=ecall}=Cp|Cps], St) ->
-    fail_ecall(Cp, Cps, St);
 fail([#cp{type=compiled,data=F}=Cp|Cps], St) ->
     F(Cp, Cps, St);
+fail([#cp{type=predicate_failure,data=Goal}|Cps], St) ->
+    fail(Cps, add_predicate_failure_reason(Goal, St));
 fail([#cut{}|Cps], St) ->			%Fail over cut points.
     fail(Cps, St);
 fail([], St) -> {fail,St}.
@@ -806,24 +923,6 @@ prove_set_prolog_flag(F, V, Pvs, Next, Fs0, St) ->
 get_prolog_flag(F, #est{fs=Fs}) ->		%We should know the flags
     {_,V,_} = lists:keyfind(F, 1, Fs),
     V.
-
-%% prove_ecall(Generator, Value, Next, St) ->
-%%     void.
-%%  Call an external (Erlang) generator and handle return value,
-%%  either succeed or fail.
-
-prove_ecall(Efun, Val, Next, #est{cps=Cps,bs=Bs,vn=Vn}=St) ->
-    case Efun() of
-	{succeed,Ret,Cont} ->			%Succeed and more choices
-	    Cp = #cp{type=ecall,data={Cont,Val},next=Next,bs=Bs,vn=Vn},
-	    unify_prove_body(Val, Ret, Next, St#est{cps=[Cp|Cps]});
-	{succeed_last,Ret} ->			%Succeed but last choice
-	    unify_prove_body(Val, Ret, Next, St);
-	fail -> ?FAIL(St)			%No more
-    end.
-
-fail_ecall(#cp{data={Efun,Val},next=Next,bs=Bs,vn=Vn}, Cps, St) ->
-    prove_ecall(Efun, Val, Next, St#est{cps=Cps,bs=Bs,vn=Vn}).
 
 %% prove_body(Body, State) -> {succeed,State}.
 %%  Prove the goals in a body. Remove the first goal and try to prove

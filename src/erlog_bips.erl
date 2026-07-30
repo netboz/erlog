@@ -71,6 +71,9 @@ load(Db0) ->
 	   {number,1},
 	   {nonvar,1},
 	   {var,1},
+	   %% Explicit logical-failure diagnostics.
+	   {fail_with_reason,1},
+	   {get_fail_reasons,1},
 	   %% Atom processing.
 	   {atom_chars,2},
 	   {atom_codes,2},
@@ -178,6 +181,11 @@ prove_goal({var,T0}, Next, #est{bs=Bs}=St) ->
 	{_} -> prove_body(Next, St);
 	_Other -> fail(St)
     end;
+%% Explicit logical-failure diagnostics.
+prove_goal({fail_with_reason,Reason0}, _Next, St) ->
+    fail_with_reason_predicate(Reason0, St);
+prove_goal({get_fail_reasons,Reasons}, Next, St) ->
+    get_fail_reasons_predicate(Reasons, Next, St);
 %% Atom processing.
 prove_goal({atom_chars,A,L}, Next, St) ->
     prove_atom_chars(A, L, Next, St);
@@ -233,6 +241,21 @@ prove_goal({write_term,T,Opts}, Next, St) ->
 %% This error should never occur!
 prove_goal(Goal, _, _) ->
     error({illegal_bip,Goal}).
+
+fail_with_reason_predicate(Reason0, #est{bs=Bs}=St) ->
+    Reason = dderef(Reason0, Bs),
+    case erlog:vars_in(Reason) of
+	[] ->
+	    case erlog_int:valid_failure_reason(Reason) of
+		true -> fail(erlog_int:add_failure_reason(Reason, St));
+		false -> erlog_int:domain_error(failure_reason, Reason, St)
+	    end;
+	_ ->
+	    erlog_int:instantiation_error(St)
+    end.
+
+get_fail_reasons_predicate(Reasons, Next, #est{fail_reasons=Stored}=St) ->
+    unify_prove_body(Reasons, Stored, Next, St).
 
 %% term_test_prove_body(Test, Left, Right, Next, State) -> void.
 
