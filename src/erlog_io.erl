@@ -28,7 +28,7 @@
 
 -module(erlog_io).
 
--export([scan_file/1,read_file/1,read/1,read/2,read_string/1,
+-export([scan_file/1,read_file/1,read/1,read/2,read_string/1,read_string_terms/1,
          write_term/2,write_term/3,write_term1/2,
          write/1,write/2,write1/1,writeq/1,writeq/2,writeq1/1,
          write_canonical/1,write_canonical/2,write_canonical1/1]).
@@ -81,7 +81,7 @@ read_file(File) ->
 read_stream(Fd, L0) ->
     case scan_erlog_term(Fd, '', L0) of
         {ok,Toks,L1} ->
-            case erlog_parse:term(Toks, L0) of
+            case erlog_parse:term(Toks, L1) of
                 {ok,end_of_file} -> [];         %Prolog does this.
                 {ok,Term} ->
                     [Term|read_stream(Fd, L1)];
@@ -109,7 +109,22 @@ read(Io, P) ->
     end.
 
 scan_erlog_term(Io, Prompt, Line) ->
-    io:request(Io, {get_until,Prompt,erlog_scan,tokens,[Line]}).
+    case io:request(Io, {get_until,Prompt,erlog_scan,tokens,[Line]}) of
+        {ok,Toks,NextLine} ->
+            {ok,normalise_eof_full_stop(Toks),NextLine};
+        Other ->
+            Other
+    end.
+
+%% At physical EOF leex cannot match the full-stop rule because that rule
+%% requires following layout. The unfinished scanner then returns the final
+%% dot as an atom. A completed get_until request can have that shape only at
+%% EOF, where Prolog defines the dot as the term terminator.
+normalise_eof_full_stop(Toks) ->
+    case lists:reverse(Toks) of
+        [{atom,Line,'.'}|Rest] -> lists:reverse(Rest, [{'.',Line}]);
+        _ -> Toks
+    end.
 
 %% read_string(String) -> {ok,Term} | {error,Error}.
 %%  Read a string. We add an extra space to be kind.
@@ -123,6 +138,40 @@ read_string(Cs) ->
             end;
         {error,Se,_} -> {error,Se}
     end.
+
+%% read_string_terms(String) -> {ok,[Term]} | {error,Error}.
+%% Read every dot-terminated Prolog term in one character list.
+
+read_string_terms(Cs) when is_list(Cs) ->
+    read_chars(Cs, 1, []);
+read_string_terms(_) ->
+    {error,badarg}.
+
+read_chars(Cs, Line, Acc) ->
+    case scan_chars(Cs, Line) of
+        {ok,Toks,NextLine,Rest} ->
+            case erlog_parse:term(Toks, NextLine) of
+                {ok,end_of_file} -> {ok,lists:reverse(Acc)};
+                {ok,Term} -> read_chars(Rest, NextLine, [Term|Acc]);
+                {error,_}=Error -> Error
+            end;
+        {eof,_NextLine} ->
+            {ok,lists:reverse(Acc)};
+        {error,_}=Error ->
+            Error
+    end.
+
+scan_chars(Cs, Line) ->
+    scan_chars_result(erlog_scan:tokens([], Cs, Line), Line).
+
+scan_chars_result({more,Continuation}, Line) ->
+    scan_chars_result(erlog_scan:tokens(Continuation, eof, Line), Line);
+scan_chars_result({done,{ok,Toks,NextLine},Rest}, _Line) ->
+    {ok,normalise_eof_full_stop(Toks),NextLine,Rest};
+scan_chars_result({done,{eof,NextLine},_Rest}, _Line) ->
+    {eof,NextLine};
+scan_chars_result({done,{error,Error,_NextLine},_Rest}, _Line) ->
+    {error,Error}.
 
 %% write_term([IoDevice,] Term, WriteOptions) -> ok.
 %% write([IoDevice,] Term) -> ok.

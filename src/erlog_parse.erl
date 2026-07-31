@@ -34,9 +34,10 @@
 
 term(Toks) -> term(Toks, 1).
 
-term(Toks, _) ->
+term(Toks, EndLine) ->
     case term(Toks, 1200, fun(Ts, T) -> all_read(Ts, T) end) of
 	{succeed,Term} -> {ok,Term};
+	{fail,{9999,Error}} -> {error,{EndLine,?MODULE,Error}};
 	{fail,{Line,Error}} -> {error,{Line,?MODULE,Error}}
     end.
 
