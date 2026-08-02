@@ -30,6 +30,7 @@
 -export([retract_clause/3,abolish_clauses/2]).
 -export([get_procedure/2,get_procedure_type/2]).
 -export([get_interpreted_functors/1]).
+-export([choicepoint_checkpoint/1,choicepoint_restore/2]).
 
 %% Return {ok,E} or catch thrown error and just return it.
 -define(RET_CATCH(E), try
@@ -42,6 +43,14 @@
 
 new(_Args) ->
     dict:new().
+
+%% Immutable dict roots are safe opaque checkpoints. Erlang shares the
+%% unchanged structure; neither operation traverses or copies the database.
+choicepoint_checkpoint(Db) ->
+    Db.
+
+choicepoint_restore(_CurrentDb, CheckpointDb) ->
+    CheckpointDb.
 
 %% add_built_in(Db, Functor) -> Db.
 %%  Add functor as a built-in in the database.

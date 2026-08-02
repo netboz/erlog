@@ -302,13 +302,14 @@ prove_arg_var(_, Ct, _, _, St) ->
 prove_arg_list(V, I, [H], A, Next, #est{bs=Bs0}=St) ->
     Bs1 = add_binding(V, I, Bs0),
     unify_prove_body(A, H, Next, St#est{bs=Bs1});
-prove_arg_list(V, I, [H|T], A, Next, #est{cps=Cps,bs=Bs0,vn=Vn}=St) ->
+prove_arg_list(V, I, [H|T], A, Next, #est{bs=Bs0,vn=Vn}=St) ->
     FailFun = fun (Lcp, Lcps, Lst) ->
 		      fail_arg_3(Lcp, Lcps, Lst, V, I+1, T, A)
 	      end,
     Cp = #cp{type=compiled,data=FailFun,next=Next,bs=Bs0,vn=Vn},
     Bs1 = add_binding(V, I, Bs0),
-    unify_prove_body(A, H, Next, St#est{cps=[Cp|Cps],bs=Bs1}).
+    St1 = erlog_int:push_choicepoint(Cp, St),
+    unify_prove_body(A, H, Next, St1#est{bs=Bs1}).
 
 fail_arg_3(#cp{next=Next,bs=Bs,vn=Vn}, Cps, St, V, I, List, A) ->
     prove_arg_list(V, I, List, A, Next, St#est{cps=Cps,bs=Bs,vn=Vn}).

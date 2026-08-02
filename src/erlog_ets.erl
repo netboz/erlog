@@ -61,12 +61,13 @@ key_2({ets_key,Tab0,KeyVar}, Next, #est{bs=Bs}=St) ->
 
 key_2_loop(_Tab, '$end_of_table', _KeyVar, _Next, St) ->
     fail(St);
-key_2_loop(Tab, Key, KeyVar, Next, #est{cps=Cps,bs=Bs,vn=Vn}=St) ->
+key_2_loop(Tab, Key, KeyVar, Next, #est{bs=Bs,vn=Vn}=St) ->
     FailFun = fun(LCp, LCps, Lst) ->
 		      key_2_fail(LCp, LCps, Lst, Tab, Key, KeyVar)
 	      end,
     Cp = #cp{type=compiled,data=FailFun,next=Next,bs=Bs,vn=Vn},
-    unify_prove_body(KeyVar, Key, Next, St#est{cps=[Cp|Cps]}).
+    unify_prove_body(KeyVar, Key, Next,
+		     erlog_int:push_choicepoint(Cp, St)).
 
 key_2_fail(#cp{next=Next,bs=Bs,vn=Vn}, Cps, St, Tab, PrevKey, KeyVar) ->
     %% io:format("kn: ~p ~p\n", [PrevKey,ets:next(Tab,PrevKey)]),
@@ -86,13 +87,13 @@ match_2({ets_match,Tab0,Pat0}, Next, #est{bs=Bs}=St) ->
     %% io:format("Pat1: ~p\nEpat: ~p\nVs:  ~p\n", [Pat1,Epat,Vs]),
     match_2_loop(ets:match(Tab1, Epat, 10), Next, St, Epat, Vs).
 
-match_2_loop({[M|Ms],Cont}, Next, #est{cps=Cps,bs=Bs,vn=Vn}=St, Epat, Vs) ->
+match_2_loop({[M|Ms],Cont}, Next, #est{bs=Bs,vn=Vn}=St, Epat, Vs) ->
     %% io:format("m2l: ~p\n     ~p\n",[M,Vs]),
     FailFun = fun (LCp, LCps, Lst) ->
 		      match_2_fail(LCp, LCps, Lst, Epat, Vs, {Ms,Cont})
 	      end,
     Cp = #cp{type=compiled,data=FailFun,next=Next,bs=Bs,vn=Vn},
-    unify_prove_body(Vs, M, Next, St#est{cps=[Cp|Cps]});
+    unify_prove_body(Vs, M, Next, erlog_int:push_choicepoint(Cp, St));
 match_2_loop({[],Cont}, Next, St, Epat, Vs) ->
     match_2_loop(ets:match(Cont), Next, St, Epat, Vs);
 match_2_loop('$end_of_table', _Next, St, _Epat, _Vs) ->

@@ -40,7 +40,8 @@
 	      fail_reasons = [],		%Newest explicit failure reason first
 	      fail_reason_bytes = 0,		%External-term bytes retained above
 	      fail_reasons_truncated = false,	%Whether omissions are represented
-	      fail_boundaries = 0		%Diagnostic boundaries created this proof
+	      fail_boundaries = 0,		%Diagnostic boundaries created this proof
+	      checkpoint_depth = 0		%Opt-in DB choice-point checkpoints
 	     }).
 -record(db, {mod,				%Database module
 	     ref,				%Database reference
@@ -50,7 +51,8 @@
 	    }).
 
 %% Define the choice point record.
--record(cp, {type,label,data,next,bs,vn}).
+-record(cp, {type,label,data,next,bs,vn,
+	     db_checkpoint = none}).
 -record(cut, {label,next}).
 
 %% Default prolog flags (sorted), {Flag,DefaultValue,SettableValues}.

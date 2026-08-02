@@ -127,6 +127,8 @@
 
 %% Main interface.
 -export([new/2,prove_goal/2,fail/1,
+	 enter_choicepoint_checkpoints/1,leave_choicepoint_checkpoints/1,
+	 push_choicepoint/2,
 	 add_failure_reason/2,valid_failure_reason/1,merge_failure_reasons/2]).
 
 %% Main execution functions.
@@ -171,6 +173,35 @@ new(DbMod, DbArg) ->
     St = #est{cps=[],bs=[],vn=0,db=Db1,fs=Fs},
     {ok,St}.
 
+%% Choice-point database checkpoints are an explicit, nestable mode used by
+%% transaction-like compiled predicates. The database module owns the opaque
+%% token: the interpreter neither copies nor examines database contents.
+%% Outside this mode push_choicepoint/2 is the ordinary single cons operation.
+enter_choicepoint_checkpoints(
+  #est{checkpoint_depth=Depth,db=#db{mod=DbMod}}=St) ->
+    _ = code:ensure_loaded(DbMod),
+    case erlang:function_exported(DbMod, choicepoint_checkpoint, 1) andalso
+         erlang:function_exported(DbMod, choicepoint_restore, 2) of
+	true -> St#est{checkpoint_depth=Depth+1};
+	false -> erlog_error(
+		   {permission_error,enable,choicepoint_checkpoints,DbMod}, St)
+    end.
+
+leave_choicepoint_checkpoints(#est{checkpoint_depth=Depth}=St)
+  when Depth > 0 ->
+    St#est{checkpoint_depth=Depth-1};
+leave_choicepoint_checkpoints(St) ->
+    erlog_error({permission_error,disable,choicepoint_checkpoints,none}, St).
+
+push_choicepoint(#cp{}=Cp,
+		 #est{cps=Cps,checkpoint_depth=0}=St) ->
+    St#est{cps=[Cp|Cps]};
+push_choicepoint(#cp{}=Cp,
+		 #est{cps=Cps,checkpoint_depth=Depth,
+		      db=#db{mod=DbMod,ref=DbRef}}=St) ->
+    Token = DbMod:choicepoint_checkpoint(DbRef),
+    St#est{cps=[Cp#cp{db_checkpoint={Depth,Token}}|Cps]}.
+
 %% prove_goal(Goal, State) -> Succeed | Fail.
 %% This is the main entry point into the interpreter. Check that
 %% everything is consistent then prove the goal as a call.
@@ -181,7 +212,7 @@ prove_goal(Goal0, St0) ->
     %% put(erlog_var, orddict:new()),
     %% Check term and build new instance of term with bindings.
     {Goal1,Bs,Vn} = initial_goal(Goal0),
-    St1 = St0#est{cps=[],bs=Bs,vn=Vn,
+    St1 = St0#est{cps=[],bs=Bs,vn=Vn,checkpoint_depth=0,
 		  fail_reasons=[],fail_reason_bytes=0,
 		  fail_reasons_truncated=false,
 		  fail_boundaries=0},			%Update state
@@ -344,9 +375,9 @@ prove_goal({call,G}, Next0, #est{cps=Cps,vn=Vn}=St0) ->
     end;
 prove_goal({{cut},Label,Last}, Next, St) ->
     cut(Label, Last, Next, St);
-prove_goal({{disj},R}, Next, #est{cps=Cps,bs=Bs,vn=Vn}=St) ->
+prove_goal({{disj},R}, Next, #est{bs=Bs,vn=Vn}=St) ->
     Cp = #cp{type=disjunction,next=R,bs=Bs,vn=Vn},
-    prove_body(Next, St#est{cps=[Cp|Cps]});
+    prove_body(Next, push_choicepoint(Cp, St));
 prove_goal(fail, _, St) ->
     ?FAIL(St);
 prove_goal(false, _, St) ->			%Synonym of fail/0
@@ -358,22 +389,20 @@ prove_goal({{if_then},Label}, Next, #est{cps=Cps}=St) ->
     %%io:fwrite("PG(->): ~p\n", [{Next}]),
     Cut = #cut{label=Label},
     prove_body(Next, St#est{cps=[Cut|Cps]});
-prove_goal({{if_then_else},Else,Label}, Next, #est{cps=Cps,bs=Bs,vn=Vn}=St) ->
+prove_goal({{if_then_else},Else,Label}, Next, #est{bs=Bs,vn=Vn}=St) ->
     %% Need to push a choicepoint to fail back to inside Cond and a cut
     %% to cut back to before Then when Cond succeeds. #cp{type=if_then_else}
     %% functions as both as is always removed whatever the outcome.
     %% There is no ( C, !, T ) here, it has already been prepended to Next.
     Cp = #cp{type=if_then_else,label=Label,next=Else,bs=Bs,vn=Vn},
-    %%io:fwrite("PG(->;): ~p\n", [{Next,Else,[Cp|Cps]}]),
-    prove_body(Next, St#est{cps=[Cp|Cps]});
-prove_goal({'\\+',G}, Next0, #est{cps=Cps,bs=Bs,vn=Vn}=St0) ->
+    prove_body(Next, push_choicepoint(Cp, St));
+prove_goal({'\\+',G}, Next0, #est{bs=Bs,vn=Vn}=St0) ->
     %% We effectively implementing \+ G with ( G -> fail ; true ).
     Label = Vn,
     {Next1,_} = check_goal(G, [{{cut},Label,true},fail], St0, true, Label),
     Cp = #cp{type=if_then_else,label=Label,next=Next0,bs=Bs,vn=Vn},
-    %%io:fwrite("PG(\\+): ~p\n", [{G1,[Cp|Cps]]),
     %% Must increment Vn to avoid clashes!!!
-    St1 = St0#est{cps=[Cp|Cps],vn=Vn+1},
+    St1 = (push_choicepoint(Cp, St0))#est{vn=Vn+1},
     prove_body(Next1, St1);
 prove_goal({{once},Label}, Next, #est{cps=Cps}=St) ->
     %% We effetively implement once(G) with ( G, ! ) but cuts in
@@ -381,9 +410,9 @@ prove_goal({{once},Label}, Next, #est{cps=Cps}=St) ->
     %% There is no ( G, ! ) here, it has already been prepended to Next.
     Cut = #cut{label=Label},
     prove_body(Next, St#est{cps=[Cut|Cps]});
-prove_goal(repeat, Next, #est{cps=Cps,bs=Bs,vn=Vn}=St) ->
+prove_goal(repeat, Next, #est{bs=Bs,vn=Vn}=St) ->
     Cp = #cp{type=disjunction,next=[repeat|Next],bs=Bs,vn=Vn},
-    prove_body(Next, St#est{cps=[Cp|Cps]});
+    prove_body(Next, push_choicepoint(Cp, St));
 
 %% Clause creation and destruction.
 prove_goal({abolish,Pi0}, Next, #est{bs=Bs,db=Db0}=St) ->
@@ -557,31 +586,42 @@ fail_if_then_else(#cp{next=Next,bs=Bs,vn=Vn}, Cps, St) ->
 fail(#est{cps=Cps}=St) ->
     fail(Cps, St).
 
-fail([#cp{type=goal_clauses}=Cp|Cps], St) ->
-    fail_goal_clauses(Cp, Cps, St);
-fail([#cp{type=disjunction}=Cp|Cps], St) ->
-    fail_disjunction(Cp, Cps, St);
-fail([#cp{type=if_then_else}=Cp|Cps], St) ->
-    fail_if_then_else(Cp, Cps, St);
-fail([#cp{type=clause}=Cp|Cps], St) ->
-    fail_clause(Cp, Cps, St);
-fail([#cp{type=retract}=Cp|Cps], St) ->
-    fail_retract(Cp, Cps, St);
-fail([#cp{type=retract_hooked}=Cp|Cps], St) ->
-    fail_retract_hooked(Cp, Cps, St);
-fail([#cp{type=current_predicate}=Cp|Cps], St) ->
-    fail_current_predicate(Cp, Cps, St);
-fail([#cp{type=findall}=Cp|Cps], St) ->
-    fail_findall(Cp, Cps, St);
-fail([#cp{type=current_prolog_flag}=Cp|Cps], St) ->
-    fail_current_prolog_flag(Cp, Cps, St);
-fail([#cp{type=compiled,data=F}=Cp|Cps], St) ->
-    F(Cp, Cps, St);
-fail([#cp{type=predicate_failure,data=Goal}|Cps], St) ->
-    fail(Cps, add_predicate_failure_reason(Goal, St));
+fail([#cp{}=Cp|Cps], St0) ->
+    fail_choicepoint(Cp, Cps, restore_choicepoint(Cp, St0));
 fail([#cut{}|Cps], St) ->			%Fail over cut points.
     fail(Cps, St);
 fail([], St) -> {fail,St}.
+
+restore_choicepoint(#cp{db_checkpoint=none}, St) ->
+    St;
+restore_choicepoint(
+  #cp{db_checkpoint={Depth,Token}},
+  #est{db=#db{mod=DbMod,ref=CurrentRef}=Db0}=St) ->
+    RestoredRef = DbMod:choicepoint_restore(CurrentRef, Token),
+    St#est{db=Db0#db{ref=RestoredRef},checkpoint_depth=Depth}.
+
+fail_choicepoint(#cp{type=goal_clauses}=Cp, Cps, St) ->
+    fail_goal_clauses(Cp, Cps, St);
+fail_choicepoint(#cp{type=disjunction}=Cp, Cps, St) ->
+    fail_disjunction(Cp, Cps, St);
+fail_choicepoint(#cp{type=if_then_else}=Cp, Cps, St) ->
+    fail_if_then_else(Cp, Cps, St);
+fail_choicepoint(#cp{type=clause}=Cp, Cps, St) ->
+    fail_clause(Cp, Cps, St);
+fail_choicepoint(#cp{type=retract}=Cp, Cps, St) ->
+    fail_retract(Cp, Cps, St);
+fail_choicepoint(#cp{type=retract_hooked}=Cp, Cps, St) ->
+    fail_retract_hooked(Cp, Cps, St);
+fail_choicepoint(#cp{type=current_predicate}=Cp, Cps, St) ->
+    fail_current_predicate(Cp, Cps, St);
+fail_choicepoint(#cp{type=findall}=Cp, Cps, St) ->
+    fail_findall(Cp, Cps, St);
+fail_choicepoint(#cp{type=current_prolog_flag}=Cp, Cps, St) ->
+    fail_current_prolog_flag(Cp, Cps, St);
+fail_choicepoint(#cp{type=compiled,data=F}=Cp, Cps, St) ->
+    F(Cp, Cps, St);
+fail_choicepoint(#cp{type=predicate_failure,data=Goal}, Cps, St) ->
+    fail(Cps, add_predicate_failure_reason(Goal, St)).
 
 cut(Label, Last, Next, #est{cps=Cps}=St) ->
     cut(Label, Last, Next, Cps, St).
@@ -683,8 +723,8 @@ unify_clauses(Ch, Cb, [C|Cs], Next, #est{bs=Bs0,vn=Vn0}=St) ->
     case unify_clause(Ch, Cb, C, Bs0, Vn0) of
 	{succeed,Bs1,Vn1} ->
 	    Cp = #cp{type=clause,data={Ch,Cb,Cs},next=Next,bs=Bs0,vn=Vn1},
-	    Cps = St#est.cps,
-	    prove_body(Next, St#est{cps=[Cp|Cps],bs=Bs1,vn=Vn1});
+	    St1 = push_choicepoint(Cp, St),
+	    prove_body(Next, St1#est{bs=Bs1,vn=Vn1});
 	fail -> unify_clauses(Ch, Cb, Cs, Next, St)
     end;
 unify_clauses(_Ch, _Cb, [], _Next, St) -> ?FAIL(St).
@@ -717,9 +757,9 @@ prove_current_predicate(Pi, Next, #est{db=Db}=St) ->
     Fs = get_interp_functors(Db),
     prove_predicates(Pi, Fs, Next, St).
 
-prove_predicates(Pi, [F|Fs], Next, #est{cps=Cps,bs=Bs,vn=Vn}=St) ->
+prove_predicates(Pi, [F|Fs], Next, #est{bs=Bs,vn=Vn}=St) ->
     Cp = #cp{type=current_predicate,data={Pi,Fs},next=Next,bs=Bs,vn=Vn},
-    unify_prove_body(Pi, pred_ind(F), Next, St#est{cps=[Cp|Cps]});
+    unify_prove_body(Pi, pred_ind(F), Next, push_choicepoint(Cp, St));
 prove_predicates(_Pi, [], _Next, St) -> ?FAIL(St).
 
 fail_current_predicate(#cp{data={Pi,Fs},next=Next,bs=Bs,vn=Vn}, Cps, St) ->
@@ -740,9 +780,9 @@ prove_goal_clauses(G, [C], Next, #est{cps=Cps,vn=Vn}=St) ->
 	    prove_goal_clause(G, C, Next, St)
     end;
     %% prove_goal_clause(G, C, Next, Cps, Bs, Vn, Db);
-prove_goal_clauses(G, [C|Cs], Next, #est{cps=Cps,bs=Bs,vn=Vn}=St) ->
+prove_goal_clauses(G, [C|Cs], Next, #est{bs=Bs,vn=Vn}=St) ->
     Cp = #cp{type=goal_clauses,label=Vn,data={G,Cs},next=Next,bs=Bs,vn=Vn},
-    prove_goal_clause(G, C, Next, St#est{cps=[Cp|Cps]});
+    prove_goal_clause(G, C, Next, push_choicepoint(Cp, St));
 prove_goal_clauses(_G, [], _Next, St) -> ?FAIL(St).
 
 prove_goal_clause(G, {_Tag,H0,{B0,_}}, Next, #est{bs=Bs0,vn=Vn0}=St) ->
@@ -800,13 +840,14 @@ prove_retract(H, B, Next, #est{db=Db}=St) ->
 %%      void.
 %%  Try to retract Head and Body using Clauses which all have the same functor.
 
-retract_clauses(Ch, Cb, [C|Cs], Next, #est{cps=Cps,bs=Bs0,vn=Vn0,db=Db0}=St) ->
+retract_clauses(Ch, Cb, [C|Cs], Next, #est{bs=Bs0,vn=Vn0,db=Db0}=St) ->
     case unify_clause(Ch, Cb, C, Bs0, Vn0) of
 	{succeed,Bs1,Vn1} ->
 	    %% We have found a right clause so now retract it.
-	    Db1 = retract_clause(functor(Ch), element(1, C), Db0),
 	    Cp = #cp{type=retract,data={Ch,Cb,Cs},next=Next,bs=Bs0,vn=Vn0},
-	    prove_body(Next, St#est{cps=[Cp|Cps],bs=Bs1,vn=Vn1,db=Db1});
+	    St1 = push_choicepoint(Cp, St),
+	    Db1 = retract_clause(functor(Ch), element(1, C), Db0),
+	    prove_body(Next, St1#est{bs=Bs1,vn=Vn1,db=Db1});
 	fail -> retract_clauses(Ch, Cb, Cs, Next, St)
     end;
 retract_clauses(_Ch, _Cb, [], _Next, St) -> ?FAIL(St).
@@ -822,14 +863,15 @@ fail_retract_hooked(#cp{data={Ch,Cb,Cs,Mod,Fun},next=Next,bs=Bs,vn=Vn}, Cps, St)
 %% Uses retract_hooked CP type so backtracking resumes through the
 %% hooked path (not the default retract_clauses).
 retract_clauses_hooked(Ch, Cb, [C|Cs], Next,
-		       #est{cps=Cps,bs=Bs0,vn=Vn0}=St, Mod, Fun) ->
+		       #est{bs=Bs0,vn=Vn0}=St, Mod, Fun) ->
     case unify_clause(Ch, Cb, C, Bs0, Vn0) of
 	{succeed,Bs1,Vn1} ->
 	    Cp = #cp{type=retract_hooked,
 		     data={Ch,Cb,Cs,Mod,Fun},
 		     next=Next,bs=Bs0,vn=Vn0},
+	    St1 = push_choicepoint(Cp, St),
 	    Mod:Fun(retract, Ch, element(1, C), Next,
-		    St#est{cps=[Cp|Cps],bs=Bs1,vn=Vn1});
+		    St1#est{bs=Bs1,vn=Vn1});
 	fail ->
 	    retract_clauses_hooked(Ch, Cb, Cs, Next, St, Mod, Fun)
     end;
@@ -845,7 +887,7 @@ retract_clauses_hooked(_Ch, _Cb, [], _Next, St, _Mod, _Fun) -> ?FAIL(St).
 %%  in fail_findall which cleans up by removing the top list and
 %%  unifying it with the output list value.
 
-prove_findall(T, G, L0, Next, #est{cps=Cps,bs=Bs,vn=Vn,db=Db0}=St) ->
+prove_findall(T, G, L0, Next, #est{bs=Bs,vn=Vn,db=Db0}=St) ->
     L1 = partial_list(L0, Bs),			%Check for partial list
     Label = Vn,
     {Body,_} = check_goal(G, [{{findall},T}], St, false, Label),
@@ -855,7 +897,9 @@ prove_findall(T, G, L0, Next, #est{cps=Cps,bs=Bs,vn=Vn,db=Db0}=St) ->
     %% Db1 = Db0#db{loc=[[]|Db0#db.loc]]},
     %% Catch case where an erlog error occurs and cleanup local lists.
     try
-	prove_body(Body, St#est{cps=[Cp|Cps],vn=Vn+1,db=Db1})
+	prove_body(
+	  Body,
+	  push_choicepoint(Cp, St#est{vn=Vn+1,db=Db1}))
     catch
 	throw:{erlog_error,E,#est{db=Dba}=Sta} ->
 	    case Dba#db.loc of %Pop the local list
@@ -888,9 +932,9 @@ findall_list([], Vn, _, Acc) -> {Acc,Vn}.
 prove_current_prolog_flag(F, V, Next, #est{fs=Fs}=St) ->
     prove_prolog_flags(F, V, Fs, Next, St).
 
-prove_prolog_flags(F, V, [{Pf,Pv,_}|Fs], Next, #est{cps=Cps,bs=Bs,vn=Vn}=St) ->
+prove_prolog_flags(F, V, [{Pf,Pv,_}|Fs], Next, #est{bs=Bs,vn=Vn}=St) ->
     Cp = #cp{type=current_prolog_flag,data={F,V,Fs},next=Next,bs=Bs,vn=Vn},
-    unify_prove_body(F, Pf, V, Pv, Next, St#est{cps=[Cp|Cps]});
+    unify_prove_body(F, Pf, V, Pv, Next, push_choicepoint(Cp, St));
 prove_prolog_flags(_F, _V, [], _Next, St) -> ?FAIL(St).
 
 fail_current_prolog_flag(#cp{data={F,V,Fs},next=Next,bs=Bs,vn=Vn}, Cps, St) ->
@@ -1357,8 +1401,6 @@ body_conj(L, true) -> L;
 body_conj(L, R) -> {',',L,R}.
 
 pred_ind({N,A}) -> {'/',N,A}.
-
-pred_ind(N, A) -> {'/',N,A}.
 
 %% Bindings
 %% Bindings are kept in a map/dict where the key is the variable name.

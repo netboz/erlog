@@ -94,7 +94,7 @@ length_2({length,L,N0}, Next, #est{bs=Bs}=St) ->
 	    erlog_int:type_error(integer, N1, St)
     end.
 
-length_3(L0, M, N, Next, #est{cps=Cps,bs=Bs0,vn=Vn}=St) ->
+length_3(L0, M, N, Next, #est{bs=Bs0,vn=Vn}=St) ->
     case deref(L0, Bs0) of
 	[] -> unify_prove_body(N, M, Next, St); 
 	[_|T] -> length_3(T, M+1, N, Next, St);
@@ -104,7 +104,8 @@ length_3(L0, M, N, Next, #est{cps=Cps,bs=Bs0,vn=Vn}=St) ->
 		      end,
 	    Cp = #cp{type=compiled,data=FailFun,next=Next,bs=Bs0,vn=Vn},
 	    Bs1 = add_binding(L1, [], Bs0),
-	    unify_prove_body(N, M, Next, St#est{cps=[Cp|Cps],bs=Bs1});
+	    St1 = erlog_int:push_choicepoint(Cp, St),
+	    unify_prove_body(N, M, Next, St1#est{bs=Bs1});
 	Other ->
 	    erlog_int:type_error(list, Other, St)
     end.
@@ -135,7 +136,7 @@ make_list(N, L0, Next, #est{bs=Bs0,vn=Vn}=St) ->
 %% append([H|T], L, [H|L1]) :- append(T, L, L1).
 %%  Here we attempt to compile indexing in the first argument.
 
-append_3({append,A1,L,A3}, Next0, #est{cps=Cps,bs=Bs0,vn=Vn}=St) ->
+append_3({append,A1,L,A3}, Next0, #est{bs=Bs0,vn=Vn}=St) ->
     case deref(A1, Bs0) of
 	[] ->					%Cannot backtrack
 	    unify_prove_body(L, A3, Next0, St);
@@ -149,7 +150,8 @@ append_3({append,A1,L,A3}, Next0, #est{cps=Cps,bs=Bs0,vn=Vn}=St) ->
 		      end,
 	    Cp = #cp{type=compiled,data=FailFun,next=Next0,bs=Bs0,vn=Vn},
 	    Bs1 = add_binding(Var, [], Bs0),
-	    unify_prove_body(L, A3, Next0, St#est{cps=[Cp|Cps],bs=Bs1});
+	    St1 = erlog_int:push_choicepoint(Cp, St),
+	    unify_prove_body(L, A3, Next0, St1#est{bs=Bs1});
 	_ -> fail(St)				%Will fail here!
     end.
 
@@ -165,12 +167,13 @@ fail_append_3(#cp{next=Next0,bs=Bs0,vn=Vn}, Cps, St, A1, L, A3) ->
 %% insert(L, X, [X|L]).
 %% insert([H|L], X, [H|L1]) :- insert(L, X, L1).
 
-insert_3({insert,A1,A2,A3}, Next, #est{cps=Cps,bs=Bs,vn=Vn}=St) ->
+insert_3({insert,A1,A2,A3}, Next, #est{bs=Bs,vn=Vn}=St) ->
     FailFun = fun (LCp, LCps, Lst) ->
 		      fail_insert_3(LCp, LCps, Lst, A1, A2, A3)
 	      end,
     Cp = #cp{type=compiled,data=FailFun,next=Next,bs=Bs,vn=Vn},
-    unify_prove_body(A3, [A2|A1], Next, St#est{cps=[Cp|Cps]}).
+    unify_prove_body(A3, [A2|A1], Next,
+		     erlog_int:push_choicepoint(Cp, St)).
 
 fail_insert_3(#cp{next=Next0,bs=Bs,vn=Vn}, Cps, St, A1, X, A3) ->
     H = {Vn},
@@ -183,13 +186,14 @@ fail_insert_3(#cp{next=Next0,bs=Bs,vn=Vn}, Cps, St, A1, X, A3) ->
 %% member(X, [X|_]).
 %% member(X, [_|T]) :- member(X, T).
 
-member_2({member,A1,A2}, Next, #est{cps=Cps,bs=Bs,vn=Vn}=St) ->
+member_2({member,A1,A2}, Next, #est{bs=Bs,vn=Vn}=St) ->
     FailFun = fun (LCp, LCps, Lst) ->
 		      fail_member_2(LCp, LCps, Lst, A1, A2)
 	      end,
     Cp = #cp{type=compiled,data=FailFun,next=Next,bs=Bs,vn=Vn},
     T = {Vn},
-    unify_prove_body(A2, [A1|T], Next, St#est{cps=[Cp|Cps],vn=Vn+1}).
+    St1 = erlog_int:push_choicepoint(Cp, St),
+    unify_prove_body(A2, [A1|T], Next, St1#est{vn=Vn+1}).
 
 fail_member_2(#cp{next=Next0,bs=Bs,vn=Vn}, Cps, St, A1, A2) ->
     H = {Vn},
@@ -221,7 +225,7 @@ memberchk_2({memberchk,A1,A2}, Next, #est{bs=Bs0}=St) ->
 %% reverse([H|L1], L) :- reverse(L1, L2), append(L2, [H], L).
 %%  Here we attempt to compile indexing in the first argument.
 
-reverse_2({reverse,A1,A2}, Next0, #est{cps=Cps,bs=Bs0,vn=Vn}=St) ->
+reverse_2({reverse,A1,A2}, Next0, #est{bs=Bs0,vn=Vn}=St) ->
     case deref(A1, Bs0) of
 	[] ->
 	    unify_prove_body(A2, [], Next0, St);
@@ -240,7 +244,8 @@ reverse_2({reverse,A1,A2}, Next0, #est{cps=Cps,bs=Bs0,vn=Vn}=St) ->
 		      end,
 	    Cp = #cp{type=compiled,data=FailFun,next=Next0,bs=Bs0,vn=Vn},
 	    Bs1 = add_binding(Var, [], Bs0),
-	    unify_prove_body(A2, [], Next0, St#est{cps=[Cp|Cps],bs=Bs1});
+	    St1 = erlog_int:push_choicepoint(Cp, St),
+	    unify_prove_body(A2, [], Next0, St1#est{bs=Bs1});
 	_ -> fail(St)				%Will fail here!
     end.
 
