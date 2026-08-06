@@ -52,7 +52,10 @@
 
 %% Define the choice point record.
 -record(cp, {type,label,data,next,bs,vn,
-	     db_checkpoint = none}).
+	     db_checkpoint = none,
+	     %% Predicate-owned state follows this exact alternative set and is
+	     %% discarded naturally when cut or exhausted.
+	     owned = #{}}).
 -record(cut, {label,next}).
 
 %% Default prolog flags (sorted), {Flag,DefaultValue,SettableValues}.

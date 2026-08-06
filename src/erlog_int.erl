@@ -212,7 +212,10 @@ prove_goal(Goal0, St0) ->
     %% put(erlog_var, orddict:new()),
     %% Check term and build new instance of term with bindings.
     {Goal1,Bs,Vn} = initial_goal(Goal0),
-    St1 = St0#est{cps=[],bs=Bs,vn=Vn,checkpoint_depth=0,
+    %% A caller may deliberately inherit choice-point checkpoint mode into a
+    %% fresh logical invocation.  A transaction restores its parent depth on
+    %% every exit, so a nonzero value can only come from an enclosing scope.
+    St1 = St0#est{cps=[],bs=Bs,vn=Vn,
 		  fail_reasons=[],fail_reason_bytes=0,
 		  fail_reasons_truncated=false,
 		  fail_boundaries=0},			%Update state
@@ -769,7 +772,10 @@ fail_current_predicate(#cp{data={Pi,Fs},next=Next,bs=Bs,vn=Vn}, Cps, St) ->
 %%      void.
 %%  Try to prove Goal using Clauses which all have the same functor.
 
-prove_goal_clauses(G, [C], Next, #est{cps=Cps,vn=Vn}=St) ->
+prove_goal_clauses(G, Clauses, Next, St) ->
+    prove_goal_clauses(G, Clauses, Next, #{}, St).
+
+prove_goal_clauses(G, [C], Next, _Owned, #est{cps=Cps,vn=Vn}=St) ->
     %% Must be smart here and test whether we need to add a cut point.
     %% C has the structure {Tag,Head,{Body,BodyHasCut}}.
     case element(2, element(3, C)) of
@@ -780,10 +786,11 @@ prove_goal_clauses(G, [C], Next, #est{cps=Cps,vn=Vn}=St) ->
 	    prove_goal_clause(G, C, Next, St)
     end;
     %% prove_goal_clause(G, C, Next, Cps, Bs, Vn, Db);
-prove_goal_clauses(G, [C|Cs], Next, #est{bs=Bs,vn=Vn}=St) ->
-    Cp = #cp{type=goal_clauses,label=Vn,data={G,Cs},next=Next,bs=Bs,vn=Vn},
+prove_goal_clauses(G, [C|Cs], Next, Owned, #est{bs=Bs,vn=Vn}=St) ->
+    Cp = #cp{type=goal_clauses,label=Vn,data={G,Cs},next=Next,
+             bs=Bs,vn=Vn,owned=Owned},
     prove_goal_clause(G, C, Next, push_choicepoint(Cp, St));
-prove_goal_clauses(_G, [], _Next, St) -> ?FAIL(St).
+prove_goal_clauses(_G, [], _Next, _Owned, St) -> ?FAIL(St).
 
 prove_goal_clause(G, {_Tag,H0,{B0,_}}, Next, #est{bs=Bs0,vn=Vn0}=St) ->
     %% io:fwrite("PGC1: ~p\n", [{G,H0,B0}]),
@@ -797,8 +804,9 @@ prove_goal_clause(G, {_Tag,H0,{B0,_}}, Next, #est{bs=Bs0,vn=Vn0}=St) ->
 	fail -> ?FAIL(St)
     end.
 
-fail_goal_clauses(#cp{data={G,Cs},next=Next,bs=Bs,vn=Vn}, Cps, St) ->
-    prove_goal_clauses(G, Cs, Next, St#est{cps=Cps,bs=Bs,vn=Vn}).
+fail_goal_clauses(#cp{data={G,Cs},next=Next,bs=Bs,vn=Vn,owned=Owned},
+                  Cps, St) ->
+    prove_goal_clauses(G, Cs, Next, Owned, St#est{cps=Cps,bs=Bs,vn=Vn}).
 
 %% cut_goal_clauses(Last, Next, Cp, St).
 

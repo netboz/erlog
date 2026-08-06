@@ -10,6 +10,13 @@ default_mode_keeps_standard_non_backtrackable_writes_test() ->
     {succeed, Final} = erlog_int:prove_goal(Goal, state()),
     ?assert(has_fact({branch, abandoned}, Final)).
 
+inherited_checkpoint_mode_survives_fresh_proof_entry_test() ->
+    Goal = {';', {',', {assertz, {branch, abandoned}}, fail}, true},
+    Inherited = erlog_int:enter_choicepoint_checkpoints(state()),
+    {succeed, Final0} = erlog_int:prove_goal(Goal, Inherited),
+    Final = erlog_int:leave_choicepoint_checkpoints(Final0),
+    ?assertNot(has_fact({branch, abandoned}, Final)).
+
 checkpoint_mode_restores_failed_disjunction_branch_test() ->
     Goal = {';',
             {',', {assertz, {branch, abandoned}}, fail},
