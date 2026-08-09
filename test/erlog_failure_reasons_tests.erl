@@ -1,5 +1,7 @@
 -module(erlog_failure_reasons_tests).
 
+-export([at_most_two_reasons/1]).
+
 -include_lib("eunit/include/eunit.hrl").
 -include("../src/erlog_int.hrl").
 
@@ -141,16 +143,35 @@ oversized_reason_is_truncated_test() ->
     Reason = binary:copy(<<"x">>, ?ERLOG_MAX_FAILURE_REASON_BYTES + 1),
     {fail, Final} = prove({fail_with_reason, Reason}),
     ?assertEqual([fail_reasons_truncated], Final#est.fail_reasons),
-    ?assert(Final#est.fail_reason_bytes =< ?ERLOG_MAX_FAILURE_REASONS_BYTES).
+    ?assertEqual(1, Final#est.fail_reason_count).
+
+outer_frames_survive_an_inner_truncation_test() ->
+    Oversized = binary:copy(<<"x">>, ?ERLOG_MAX_FAILURE_REASON_BYTES + 1),
+    Inner = erlog_int:add_failure_reason(Oversized, state()),
+    Outer = erlog_int:add_failure_reason({outer, failed}, Inner),
+    ?assertEqual([{outer, failed}, fail_reasons_truncated],
+                 Outer#est.fail_reasons),
+    ?assertEqual(2, Outer#est.fail_reason_count).
 
 total_reason_stack_is_bounded_test() ->
     Reason = binary:copy(<<"x">>, 4000),
     Final = lists:foldl(
               fun(N, St) -> erlog_int:add_failure_reason({reason, N, Reason}, St) end,
               state(), lists:seq(1, 10)),
-    ?assert(Final#est.fail_reason_bytes =< ?ERLOG_MAX_FAILURE_REASONS_BYTES),
+    ?assert(erlang:external_size(Final#est.fail_reasons) =<
+                ?ERLOG_MAX_FAILURE_REASONS_BYTES),
+    ?assert(Final#est.fail_reason_count =< ?ERLOG_MAX_FAILURE_REASONS),
     ?assert(Final#est.fail_reasons_truncated),
     ?assert(lists:member(fail_reasons_truncated, Final#est.fail_reasons)).
+
+custom_stack_policy_truncates_at_creation_test() ->
+    St0 = erlog_int:set_failure_reason_policy(
+            {?MODULE, at_most_two_reasons}, state()),
+    St1 = erlog_int:add_failure_reason(first, St0),
+    St2 = erlog_int:add_failure_reason(second, St1),
+    ?assertEqual([fail_reasons_truncated, first], St2#est.fail_reasons),
+    ?assertEqual(2, St2#est.fail_reason_count),
+    ?assert(St2#est.fail_reasons_truncated).
 
 remote_merge_preserves_order_and_bounds_test() ->
     Local = erlog_int:add_failure_reason(local, state()),
@@ -181,3 +202,5 @@ value(Name, #est{bs = Bs}) -> erlog_int:dderef({Name}, Bs).
 
 conjunction([Goal]) -> Goal;
 conjunction([Goal | Goals]) -> {',', Goal, conjunction(Goals)}.
+
+at_most_two_reasons(Reasons) -> length(Reasons) =< 2.

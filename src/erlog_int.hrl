@@ -29,6 +29,7 @@
 %% comfortably below users such as quod's 1 MiB proof-answer frame.
 -define(ERLOG_MAX_FAILURE_REASON_BYTES, 4096).
 -define(ERLOG_MAX_FAILURE_REASONS_BYTES, 32768).
+-define(ERLOG_MAX_FAILURE_REASONS, 256).
 -define(ERLOG_MAX_FAILURE_BOUNDARIES, 256).
 
 %% Define the interpreter state record.
@@ -38,9 +39,14 @@
 	      db,				%Database
 	      fs,				%Flags
 	      fail_reasons = [],		%Newest explicit failure reason first
-	      fail_reason_bytes = 0,		%External-term bytes retained above
+	      fail_reason_count = 0,		%Explicit + automatic entries retained above
 	      fail_reasons_truncated = false,	%Whether omissions are represented
 	      fail_boundaries = 0,		%Diagnostic boundaries created this proof
+	      %% Application-owned admission for the complete reason stack.  The
+	      %% default uses Erlog's native portable-term bounds; embedders may
+	      %% install a stricter wire-compatible policy without Erlog depending
+	      %% on their codec.
+	      fail_reason_policy = native,
 	      checkpoint_depth = 0		%Opt-in DB choice-point checkpoints
 	     }).
 -record(db, {mod,				%Database module
