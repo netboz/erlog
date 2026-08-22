@@ -26,23 +26,13 @@
 
 -module(erlog_parse).
 
--export([term/1,term/2,term_binary/1,term_binary/2,format_error/1]).
+-export([term/1,term/2,format_error/1]).
 -export([prefix_op/1,infix_op/1,postfix_op/1]).
 
 -compile({nowarn_unused_function,[type/1,line/1,val/1]}).
 %% -compile(export_all).
 
 term(Toks) -> term(Toks, 1).
-
-%% Enable the explicit `<<"...">>` literal without changing the ordinary
-%% token parser. Callers that need a frozen older grammar keep using term/1,2.
-term_binary(Toks) -> term_binary(Toks, 1).
-
-term_binary(Toks, EndLine) ->
-    case binary_tokens(Toks, []) of
-        {ok, BinaryTokens} -> term(BinaryTokens, EndLine);
-        {error, Line} -> {error,{Line,?MODULE,invalid_binary_literal}}
-    end.
 
 term(Toks, EndLine) ->
     case term(Toks, 1200, fun(Ts, T) -> all_read(Ts, T) end) of
@@ -71,35 +61,11 @@ format_error({op_priority,Op}) ->
 format_error({expected,T}) ->
     io_lib:fwrite("~w or operator expected", [T]).
 
-binary_tokens([{atom,Line,'<<'},{string,_StringLine,Bytes},{atom,_,'>>'} | Rest], Acc) ->
-    case binary_literal(Bytes) of
-        {ok, Binary} -> binary_tokens(Rest, [{binary,Line,Binary} | Acc]);
-        error -> {error, Line}
-    end;
-binary_tokens([Token | Rest], Acc) ->
-    binary_tokens(Rest, [Token | Acc]);
-binary_tokens([], Acc) ->
-    {ok, lists:reverse(Acc)}.
-
-binary_literal(Bytes) when is_list(Bytes) ->
-    binary_literal(Bytes, []);
-binary_literal(_) ->
-    error.
-
-binary_literal([], Acc) ->
-    {ok, list_to_binary(lists:reverse(Acc))};
-binary_literal([Byte | Rest], Acc)
-  when is_integer(Byte), Byte >= 0, Byte =< 255 ->
-    binary_literal(Rest, [Byte | Acc]);
-binary_literal(_, _Acc) ->
-    error.
-
 %% term(Tokens, Precedence, Next) -> {succeed,Term} | {fail,Error}.
 
 term([{number,_,N}|Toks], Prec, Next) -> rest_term(Toks, N, 0, Prec, Next);
-%% Erlang-style byte literal.  This is deliberately a term-level pattern:
-%% `<<"bytes">>` is unambiguous at the start of a term, while `A << B`
-%% remains the existing infix shift expression.
+%% The scanner emits `<<"bytes">>` as one byte-literal token.  `<<` and
+%% `>>` remain ordinary infix operators everywhere else.
 term([{binary,_,Bin}|Toks], Prec, Next) -> rest_term(Toks, Bin, 0, Prec, Next);
 term([{string,_,S}|Toks], Prec, Next) -> rest_term(Toks, S, 0, Prec, Next);
 term([{'(',_}|Toks], Prec, Next) ->

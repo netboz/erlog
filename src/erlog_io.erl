@@ -81,7 +81,7 @@ read_file(File) ->
 read_stream(Fd, L0) ->
     case scan_erlog_term(Fd, '', L0) of
         {ok,Toks,L1} ->
-            case erlog_parse:term_binary(Toks, L1) of
+            case erlog_parse:term(Toks, L1) of
                 {ok,end_of_file} -> [];         %Prolog does this.
                 {ok,Term} ->
                     [Term|read_stream(Fd, L1)];
@@ -100,7 +100,7 @@ read(P) -> read(standard_io, P).
 read(Io, P) ->
     case scan_erlog_term(Io, P, 1) of
         {ok,Ts,_} ->
-            case erlog_parse:term_binary(Ts) of
+            case erlog_parse:term(Ts) of
                 {ok,T} -> {ok,T};
                 {error,Pe} -> {error,Pe}
             end;
@@ -132,7 +132,7 @@ normalise_eof_full_stop(Toks) ->
 read_string(Cs) ->
     case erlog_scan:string(Cs ++ " ", 1) of     %Ensure ending space
         {ok,Ts,_} ->
-            case erlog_parse:term_binary(Ts) of
+            case erlog_parse:term(Ts) of
                 {ok,T} -> {ok,T};
                 {error,Pe} -> {error,Pe}
             end;
@@ -150,7 +150,7 @@ read_string_terms(_) ->
 read_chars(Cs, Line, Acc) ->
     case scan_chars(Cs, Line) of
         {ok,Toks,NextLine,Rest} ->
-            case erlog_parse:term_binary(Toks, NextLine) of
+            case erlog_parse:term(Toks, NextLine) of
                 {ok,end_of_file} -> {ok,lists:reverse(Acc)};
                 {ok,Term} -> read_chars(Rest, NextLine, [Term|Acc]);
                 {error,_}=Error -> Error

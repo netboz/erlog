@@ -21,11 +21,15 @@ binary_literal_is_a_term_and_does_not_change_shift_syntax_test() ->
        {ok,[{payload, <<"a\n">>},
             {is, {'X'}, {'<<', {'X'}, 2}}]},
        erlog_io:read_string_terms(
-         "payload(<<\"a\\n\">>).\nX is X << 2.")).
+         "payload(<<\"a\\n\">>).\nX is X << 2.")),
+    %% Layout keeps the old shift operators distinct from a binary literal.
+    ?assertEqual(
+       {ok,[{'>>', {'<<', {'X'}, "x"}, {'Y'}}]},
+       erlog_io:read_string_terms("X << \"x\" >> Y.")).
 
 binary_literal_rejects_non_byte_escape_test() ->
     ?assertMatch(
-       {error,{1,erlog_parse,invalid_binary_literal}},
+       {error,{1,erlog_scan,_}},
        erlog_io:read_string_terms("payload(<<\"\\x100\\\">>).")).
 
 read_string_terms_reports_scanner_line_test() ->
