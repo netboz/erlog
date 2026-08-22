@@ -16,6 +16,18 @@ read_string_terms_accepts_empty_source_test() ->
 read_string_terms_accepts_final_dot_without_space_test() ->
     ?assertEqual({ok,[only]}, erlog_io:read_string_terms("only.")).
 
+binary_literal_is_a_term_and_does_not_change_shift_syntax_test() ->
+    ?assertEqual(
+       {ok,[{payload, <<"a\n">>},
+            {is, {'X'}, {'<<', {'X'}, 2}}]},
+       erlog_io:read_string_terms(
+         "payload(<<\"a\\n\">>).\nX is X << 2.")).
+
+binary_literal_rejects_non_byte_escape_test() ->
+    ?assertMatch(
+       {error,{1,erlog_parse,invalid_binary_literal}},
+       erlog_io:read_string_terms("payload(<<\"\\x100\\\">>).")).
+
 read_string_terms_reports_scanner_line_test() ->
     ?assertMatch(
        {error,{2,erlog_scan,_}},
