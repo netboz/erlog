@@ -1575,6 +1575,18 @@ initial_goal([H0|T0], Bs0, Vn0) ->
     {T1,Bs2,Vn2} = initial_goal(T0, Bs1, Vn1),
     {[H1|T1],Bs2,Vn2};
 initial_goal([], Bs, Vn) -> {[],Bs,Vn};
+%% An opaque callable-shaped value may occur as data inside a governed
+%% external predicate such as Quod's `Target::Goal`.  It is not itself an
+%% Erlog callable (the ordinary prove path still rejects it), but walking the
+%% enclosing goal must preserve it until that predicate's owner handles it.
+initial_goal(S, Bs0, Vn0)
+  when is_tuple(S), tuple_size(S) >= 2,
+       is_tuple(element(1, S)), tuple_size(element(1, S)) =:= 2,
+       element(1, element(1, S)) =:= '$quod_symbol',
+       is_binary(element(2, element(1, S))) ->
+    As0 = tl(tuple_to_list(S)),
+    {As1, Bs1, Vn1} = initial_goal(As0, Bs0, Vn0),
+    {list_to_tuple([element(1, S)|As1]), Bs1, Vn1};
 initial_goal(S, Bs0, Vn0) when ?IS_FUNCTOR(S) ->
     As0 = tl(tuple_to_list(S)),
     {As1,Bs1,Vn1} = initial_goal(As0, Bs0, Vn0),
