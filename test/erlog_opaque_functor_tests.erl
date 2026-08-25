@@ -19,6 +19,10 @@ opaque_functor_is_not_executable_test() ->
        {erlog_error, {type_error, callable, _}, _},
        catch erlog_int:prove_goal(OpaqueGoal, state())).
 
+byte_literals_remain_a_single_term_test() ->
+    {ok, Tokens, _} = erlog_scan:string("accept(<<\"x\">>).\n"),
+    ?assertMatch({ok, {accept, <<"x">>}}, erlog_parse:term(Tokens)).
+
 accept_1({accept, _Value}, Next, St) ->
     erlog_int:prove_body(Next, St).
 

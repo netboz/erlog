@@ -48,6 +48,15 @@ Rules.
 			{token,{number,TokenLine,hd(chars(string:substr(TokenChars, 3)))}}.
 
 %% Atoms.
+%% Keep this ahead of generic graphic atoms: it recognizes the contiguous
+%% Erlang-style byte literal without changing the `<<` and `>>` operators.
+<<"(\\\\{O}+\\\\|\\\\x{H}+\\\\|\\\\.|[^"])*">> :
+			%% Strip `<<` and `>>`.
+			S = string:substr(TokenChars, 4, TokenLen - 6),
+			case binary_chars(chars(S)) of
+			    {ok, Binary} -> {token,{binary,TokenLine,Binary}};
+			    error -> {error,"binary literal contains a non-byte character"}
+			end.
 {L}{A}*		:	{token,{atom,TokenLine,list_to_atom(TokenChars)}}.
 !		:	{token,{atom,TokenLine,'!'}}.
 ;		:	{token,{atom,TokenLine,';'}}.
@@ -137,6 +146,15 @@ chars([$\\,C|Cs0]) when C >= $0, C =< $7 ->
 chars([$\\,C|Cs]) -> [escape_char(C)|chars(Cs)];
 chars([C|Cs]) -> [C|chars(Cs)];
 chars([]) -> [].
+
+%% Binary literals are deliberately byte strings, not Erlang's full bit
+%% syntax. Escapes are decoded by chars/1, then every codepoint must fit.
+binary_chars(Chars) when is_list(Chars) ->
+    case lists:all(fun (C) -> is_integer(C) andalso C >= 0 andalso C =< 255 end,
+                   Chars) of
+        true -> {ok,list_to_binary(Chars)};
+        false -> error
+    end.
 
 hex_char(C) when C >= $0, C =< $9 -> true;
 hex_char(C) when C >= $a, C =< $f -> true;

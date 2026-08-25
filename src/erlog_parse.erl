@@ -64,6 +64,9 @@ format_error({expected,T}) ->
 %% term(Tokens, Precedence, Next) -> {succeed,Term} | {fail,Error}.
 
 term([{number,_,N}|Toks], Prec, Next) -> rest_term(Toks, N, 0, Prec, Next);
+%% The scanner emits `<<"bytes">>` as one byte-literal token. `<<` and
+%% `>>` remain ordinary infix operators everywhere else.
+term([{binary,_,Bin}|Toks], Prec, Next) -> rest_term(Toks, Bin, 0, Prec, Next);
 term([{string,_,S}|Toks], Prec, Next) -> rest_term(Toks, S, 0, Prec, Next);
 term([{'(',_}|Toks], Prec, Next) ->
     bracket_term(Toks, Prec, Next);
