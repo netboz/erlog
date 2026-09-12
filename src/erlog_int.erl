@@ -942,16 +942,22 @@ retract_clauses_hooked(_Ch, _Cb, [], _Next, St, _Mod, _Fun) -> ?FAIL(St).
 prove_findall(T, G, L0, Next, #est{bs=Bs,vn=Vn,db=Db0}=St) ->
     L1 = partial_list(L0, Bs),			%Check for partial list
     Label = Vn,
-    {Body,_} = check_goal(G, [{{findall},T}], St, false, Label),
+    {Body,HasCut} = check_goal(G, [{{findall},T}], St, false, Label),
     Cp = #cp{type=findall,data=L1,next=Next,bs=Bs,vn=Vn},
     Locs = Db0#db.loc,				%Add a new local list
     Db1 = Db0#db{loc=[[]|Locs]},
     %% Db1 = Db0#db{loc=[[]|Db0#db.loc]]},
     %% Catch case where an erlog error occurs and cleanup local lists.
     try
-	prove_body(
-	  Body,
-	  push_choicepoint(Cp, St#est{vn=Vn+1,db=Db1}))
+	St1 = push_choicepoint(Cp, St#est{vn=Vn+1,db=Db1}),
+	%% The generator's cut is local, as in call/1. Keep its barrier above
+	%% the collector: exhausting the cut goal must still run fail_findall
+	%% and restore the collector's checkpoint, without pruning its caller.
+	St2 = case HasCut of
+		  true -> St1#est{cps=[#cut{label=Label}|St1#est.cps]};
+		  false -> St1
+	      end,
+	prove_body(Body, St2)
     catch
 	throw:{erlog_error,E,#est{db=Dba}=Sta} ->
 	    case Dba#db.loc of %Pop the local list
@@ -1248,7 +1254,10 @@ well_form_body({once,G}, Tail, Cut, Label) ->
 well_form_body({V}, Tail, Cut, _Label) ->
     {[{call,{V}}|Tail],Cut};
 well_form_body(true, Tail, Cut, _Label) -> {Tail,Cut}; %No-op
-well_form_body(fail, _Tail, _Cut, _Label) -> {[fail],false};	%No further
+%% The tail is unreachable, but its enclosing control still owns the cut
+%% boundary. Clearing Cut would let an earlier ! remove an if/negation
+%% fallback before this fail reaches it.
+well_form_body(fail, _Tail, Cut, _Label) -> {[fail],Cut};
 well_form_body('!', Tail, Cut, Label) ->
     {[{{cut},Label,not Cut}|Tail],true};
 well_form_body(Goal, Tail, Cut, _Label) ->
@@ -1282,7 +1291,7 @@ well_form_goal({once,G}, Tail, Cut, Label) ->
 well_form_goal({V}, Tail, Cut, _Label) ->
     {[{call,{V}}|Tail],Cut};
 well_form_goal(true, Tail, Cut, _Label) -> {Tail,Cut}; %No-op
-well_form_goal(fail, _Tail, _Cut, _Label) -> {[fail],false};	%No further
+well_form_goal(fail, _Tail, Cut, _Label) -> {[fail],Cut}; %Keep enclosing boundary
 well_form_goal('!', Tail, Cut, Label) ->
     {[{{cut},Label,not Cut}|Tail],true};
 well_form_goal(Goal, Tail, Cut, _Label) ->
