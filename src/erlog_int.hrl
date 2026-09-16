@@ -47,7 +47,10 @@
 	      %% install a stricter wire-compatible policy without Erlog depending
 	      %% on their codec.
 	      fail_reason_policy = native,
-	      checkpoint_depth = 0		%Opt-in DB choice-point checkpoints
+	      checkpoint_depth = 0,		%Opt-in DB choice-point checkpoints
+	      %% The embedding evaluation owns this sink. Observations are not
+	      %% logical bindings: failed alternatives and rollback still count.
+	      observation_sink = none
 	     }).
 -record(db, {mod,				%Database module
 	     ref,				%Database reference

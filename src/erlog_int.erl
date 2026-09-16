@@ -130,6 +130,7 @@
 	 enter_choicepoint_checkpoints/1,leave_choicepoint_checkpoints/1,
 	 push_choicepoint/2,
 	 set_failure_reason_policy/2,
+	 set_observation_sink/2,
 	 add_failure_reason/2,valid_failure_reason/1,merge_failure_reasons/2]).
 
 %% Main execution functions.
@@ -476,7 +477,9 @@ prove_goal({abolish,Pi0}, Next, #est{bs=Bs,db=Db0}=St) ->
 prove_goal({assert,C0}, Next, #est{bs=Bs,db=Db0}=St) ->
     C = dderef(C0, Bs),
     case maps:find(clause_functor(C), Db0#db.assert_hooks) of
-	{ok, {Mod, Fun}} -> Mod:Fun(assert, C, Next, St);
+	{ok, {Mod, Fun}} ->
+            observe({native, Mod, Fun, {assert, 1}}, St),
+            Mod:Fun(assert, C, Next, St);
 	error ->
 	    Db1 = assertz_clause(C, Db0),
 	    prove_body(Next, St#est{db=Db1})
@@ -484,7 +487,9 @@ prove_goal({assert,C0}, Next, #est{bs=Bs,db=Db0}=St) ->
 prove_goal({asserta,C0}, Next, #est{bs=Bs,db=Db0}=St) ->
     C = dderef(C0, Bs),
     case maps:find(clause_functor(C), Db0#db.assert_hooks) of
-	{ok, {Mod, Fun}} -> Mod:Fun(asserta, C, Next, St);
+	{ok, {Mod, Fun}} ->
+            observe({native, Mod, Fun, {asserta, 1}}, St),
+            Mod:Fun(asserta, C, Next, St);
 	error ->
 	    Db1 = asserta_clause(C, Db0),
 	    prove_body(Next, St#est{db=Db1})
@@ -492,7 +497,9 @@ prove_goal({asserta,C0}, Next, #est{bs=Bs,db=Db0}=St) ->
 prove_goal({assertz,C0}, Next, #est{bs=Bs,db=Db0}=St) ->
     C = dderef(C0, Bs),
     case maps:find(clause_functor(C), Db0#db.assert_hooks) of
-	{ok, {Mod, Fun}} -> Mod:Fun(assertz, C, Next, St);
+	{ok, {Mod, Fun}} ->
+            observe({native, Mod, Fun, {assertz, 1}}, St),
+            Mod:Fun(assertz, C, Next, St);
 	error ->
 	    Db1 = assertz_clause(C, Db0),
 	    prove_body(Next, St#est{db=Db1})
@@ -551,8 +558,12 @@ prove_goal(G0, Next, #est{bs=Bs,db=Db}=St) ->
     G = dderef(G0, Bs),
     %%io:fwrite("PG: ~p\n    ~p\n    ~p\n", [dderef(G, Bs),Next,Cps]),
     try get_procedure(functor(G), Db) of
-	built_in -> erlog_bips:prove_goal(G, Next, predicate_failure_boundary(G, St));
-	{code,{Mod,Func}} -> Mod:Func(G, Next, predicate_failure_boundary(G, St));
+	built_in ->
+            observe({native, erlog_bips, prove_goal, functor(G)}, St),
+            erlog_bips:prove_goal(G, Next, predicate_failure_boundary(G, St));
+	{code,{Mod,Func}} ->
+            observe({native, Mod, Func, functor(G)}, St),
+            Mod:Func(G, Next, predicate_failure_boundary(G, St));
 	{clauses,Cs} -> prove_goal_clauses(G, Cs, Next, predicate_failure_boundary(G, St));
 	undefined ->
 	    case get_prolog_flag(unknown, St) of
@@ -666,6 +677,7 @@ fail_choicepoint(#cp{type=findall}=Cp, Cps, St) ->
 fail_choicepoint(#cp{type=current_prolog_flag}=Cp, Cps, St) ->
     fail_current_prolog_flag(Cp, Cps, St);
 fail_choicepoint(#cp{type=compiled,data=F}=Cp, Cps, St) ->
+    observe(native_continuation, St),
     F(Cp, Cps, St);
 fail_choicepoint(#cp{type=predicate_failure,data=Goal}, Cps, St) ->
     fail(Cps, add_predicate_failure_reason(Goal, St)).
@@ -922,6 +934,7 @@ retract_clauses_hooked(Ch, Cb, [C|Cs], Next,
 		     data={Ch,Cb,Cs,Mod,Fun},
 		     next=Next,bs=Bs0,vn=Vn0},
 	    St1 = push_choicepoint(Cp, St),
+	    observe({native, Mod, Fun, {retract, 1}}, St1),
 	    Mod:Fun(retract, Ch, element(1, C), Next,
 		    St1#est{bs=Bs1,vn=Vn1});
 	fail ->
@@ -987,10 +1000,18 @@ findall_list([], Vn, _, Acc) -> {Acc,Vn}.
 %% prove_set_prolog_flag(Flag, Value, Next, State) ->
 %%      void.
 
-prove_current_prolog_flag(F, V, Next, #est{fs=Fs}=St) ->
+prove_current_prolog_flag(F, V, Next, #est{fs=Fs,bs=Bs}=St) ->
+    %% The name lookup matters even when it finds no flag. A variable name
+    %% observes the registry, including alternatives reached during redo.
+    observe({flag_lookup, deref(F, Bs)}, St),
     prove_prolog_flags(F, V, Fs, Next, St).
 
 prove_prolog_flags(F, V, [{Pf,Pv,_}|Fs], Next, #est{bs=Bs,vn=Vn}=St) ->
+    case deref(F, Bs) of
+        Pf -> observe({flag_value, Pf, Pv}, St);
+        {_} -> observe({flag_value, Pf, Pv}, St);
+        _ -> ok
+    end,
     Cp = #cp{type=current_prolog_flag,data={F,V,Fs},next=Next,bs=Bs,vn=Vn},
     unify_prove_body(F, Pf, V, Pv, Next, push_choicepoint(Cp, St));
 prove_prolog_flags(_F, _V, [], _Next, St) -> ?FAIL(St).
@@ -1022,9 +1043,24 @@ prove_set_prolog_flag(F, V, Pvs, Next, Fs0, St) ->
 	    domain_error(flag_value, {'+',F,V}, St)
     end.
 
-get_prolog_flag(F, #est{fs=Fs}) ->		%We should know the flags
+get_prolog_flag(F, #est{fs=Fs}=St) ->		%We should know the flags
     {_,V,_} = lists:keyfind(F, 1, Fs),
+    observe({flag_value, F, V}, St),
     V.
+
+%% Install an evaluation-owned monotone observation sink, not a Prolog flag.
+%% It survives redo, cuts and DB checkpoints, and cannot affect bindings or
+%% the chosen alternative. A failing sink fails loudly: callers must never
+%% mistake an incomplete dependency basis for a reusable result. Native
+%% entries are deliberately unclassified; embedders must conservatively
+%% account for any inputs their handlers can observe outside the interpreter.
+-spec set_observation_sink(none | fun((term()) -> ok), #est{}) -> #est{}.
+set_observation_sink(none, St) -> St#est{observation_sink=none};
+set_observation_sink(Sink, St) when is_function(Sink, 1) ->
+    St#est{observation_sink=Sink}.
+
+observe(_Event, #est{observation_sink=none}) -> ok;
+observe(Event, #est{observation_sink=Sink}) -> ok = Sink(Event).
 
 %% prove_body(Body, State) -> {succeed,State}.
 %%  Prove the goals in a body. Remove the first goal and try to prove
