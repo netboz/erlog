@@ -251,13 +251,20 @@ set_failure_reason_policy(_, _) ->
 %%
 %% The stack is proof-local state, deliberately not snapshotted by choicepoints:
 %% a backtracking alternative must be able to inspect the reasons that led to it.
-%% Admission always checks the complete candidate stack. Reserve one entry and
-%% the policy's exact encoded room for the truncation marker until it is present,
-%% so an omitted reason can always be represented without violating the same
-%% contract used at an ontology/wire boundary.
+%% Native admission validates each new reason; retained reasons stay valid.
+%% Explicit callback policies check the complete stack, reserving room for the
+%% truncation marker under the same contract used at an ontology/wire boundary.
 
 add_failure_reason(fail_reasons_truncated, St) ->
     mark_failure_reasons_truncated(St);
+%% The retained native stack contains only admitted reasons. Checking the new
+%% reason preserves that invariant without revisiting its immutable suffix.
+add_failure_reason(Reason,
+                   #est{fail_reasons=Reasons,fail_reason_policy=native}=St) ->
+    case valid_failure_reason(Reason) of
+        true -> St#est{fail_reasons=[Reason|Reasons]};
+        false -> mark_failure_reasons_truncated(St)
+    end;
 add_failure_reason(Reason,
 		   #est{fail_reasons=Reasons,
 			fail_reasons_truncated=true,
@@ -567,9 +574,6 @@ prove_goal(G0, Next, #est{bs=Bs,db=Db}=St) ->
 %% already-dereferenced call by reference and freeze it only if the boundary is
 %% reached; successful calls therefore do not deep-copy their arguments.
 %%
-%% Boundary creation has a proof-wide cap. This bounds the extra choicepoint
-%% retention even for long deterministic recursion; reaching the cap marks the
-%% diagnostic as truncated and lets execution continue without another frame.
 %% The two diagnostic built-ins do not describe application-level failures and
 %% therefore do not frame themselves.
 predicate_failure_boundary({fail_with_reason,_Reason}, St) ->
