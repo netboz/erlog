@@ -218,9 +218,8 @@ prove_goal(Goal0, St0) ->
     %% fresh logical invocation.  A transaction restores its parent depth on
     %% every exit, so a nonzero value can only come from an enclosing scope.
     St1 = St0#est{cps=[],bs=Bs,vn=Vn,
-		  fail_reasons=[],fail_reason_count=0,
-		  fail_reasons_truncated=false,
-		  fail_boundaries=0},			%Update state
+		  fail_reasons=[],
+		  fail_reasons_truncated=false},			%Update state
     prove_body([{call,Goal1}], St1).
 
 %% set_failure_reason_policy(Policy, State) -> State.
@@ -229,14 +228,14 @@ prove_goal(Goal0, St0) ->
 %% will use outside the interpreter.  The callback receives the COMPLETE
 %% newest-first stack and returns true only when that stack is admissible.  It
 %% is installed before a proof starts; changing policy under retained reasons
-%% would invalidate the count/truncation invariant.
+%% would invalidate the truncation invariant.
 
 set_failure_reason_policy(native,
-			  #est{fail_reasons=[],fail_reason_count=0,
+			  #est{fail_reasons=[],
 			       fail_reasons_truncated=false}=St) ->
     St#est{fail_reason_policy=native};
 set_failure_reason_policy({Mod,Fun}=Policy,
-			  #est{fail_reasons=[],fail_reason_count=0,
+			  #est{fail_reasons=[],
 			       fail_reasons_truncated=false}=St)
   when is_atom(Mod), is_atom(Fun) ->
     case failure_stack_allowed([], Policy) andalso
@@ -260,24 +259,22 @@ set_failure_reason_policy(_, _) ->
 add_failure_reason(fail_reasons_truncated, St) ->
     mark_failure_reasons_truncated(St);
 add_failure_reason(Reason,
-		   #est{fail_reasons=Reasons,fail_reason_count=Count,
+		   #est{fail_reasons=Reasons,
 			fail_reasons_truncated=true,
 			fail_reason_policy=Policy}=St) ->
     Candidate = [Reason|Reasons],
-    case Count < ?ERLOG_MAX_FAILURE_REASONS andalso
-	 failure_stack_allowed(Candidate, Policy) of
-	true -> St#est{fail_reasons=Candidate,fail_reason_count=Count+1};
+    case failure_stack_allowed(Candidate, Policy) of
+	true -> St#est{fail_reasons=Candidate};
 	false -> St
     end;
 add_failure_reason(Reason,
-		   #est{fail_reasons=Reasons,fail_reason_count=Count,
+		   #est{fail_reasons=Reasons,
 			fail_reason_policy=Policy}=St) ->
     Candidate = [Reason|Reasons],
     Reserved = [fail_reasons_truncated|Candidate],
-    case Count < ?ERLOG_MAX_FAILURE_REASONS - 1 andalso
-	 failure_stack_allowed(Reserved, Policy) of
+    case failure_stack_allowed(Reserved, Policy) of
 	true ->
-	    St#est{fail_reasons=Candidate,fail_reason_count=Count+1};
+	    St#est{fail_reasons=Candidate};
 	false ->
 	    mark_failure_reasons_truncated(St)
     end.
@@ -294,38 +291,25 @@ merge_failure_reasons(_, _) ->
 mark_failure_reasons_truncated(#est{fail_reasons_truncated=true}=St) ->
     St;
 mark_failure_reasons_truncated(#est{fail_reasons=Reasons,
-				    fail_reason_count=Count,
 				    fail_reason_policy=Policy}=St) ->
     Marked = [fail_reasons_truncated|Reasons],
-    true = Count < ?ERLOG_MAX_FAILURE_REASONS,
     true = failure_stack_allowed(Marked, Policy),
-    St#est{fail_reasons=Marked,fail_reason_count=Count+1,
+    St#est{fail_reasons=Marked,
 	   fail_reasons_truncated=true}.
 
 valid_failure_reason(Reason) ->
     erlog:vars_in(Reason) =:= [] andalso portable_failure_reason(Reason).
 
 failure_stack_allowed(Reasons, native) ->
-    valid_native_failure_stack(Reasons, 0) andalso
-	erlang:external_size(Reasons) =< ?ERLOG_MAX_FAILURE_REASONS_BYTES;
+    valid_failure_stack_shape(Reasons);
 failure_stack_allowed(Reasons, {Mod,Fun}) ->
-    valid_failure_stack_shape(Reasons, 0) andalso
-	try Mod:Fun(Reasons) =:= true catch _:_ -> false end.
+    valid_failure_stack_shape(Reasons) andalso
+        try Mod:Fun(Reasons) =:= true catch _:_ -> false end.
 
-valid_native_failure_stack([Reason|Reasons], Count)
-  when Count < ?ERLOG_MAX_FAILURE_REASONS ->
-    erlang:external_size(Reason) =< ?ERLOG_MAX_FAILURE_REASON_BYTES andalso
-	valid_failure_reason(Reason) andalso
-	valid_native_failure_stack(Reasons, Count+1);
-valid_native_failure_stack([], _Count) -> true;
-valid_native_failure_stack(_, _Count) -> false.
-
-valid_failure_stack_shape([Reason|Reasons], Count)
-  when Count < ?ERLOG_MAX_FAILURE_REASONS ->
-    valid_failure_reason(Reason) andalso
-	valid_failure_stack_shape(Reasons, Count+1);
-valid_failure_stack_shape([], _Count) -> true;
-valid_failure_stack_shape(_, _Count) -> false.
+valid_failure_stack_shape([Reason|Reasons]) ->
+    valid_failure_reason(Reason) andalso valid_failure_stack_shape(Reasons);
+valid_failure_stack_shape([]) -> true;
+valid_failure_stack_shape(_) -> false.
 
 portable_failure_reason(T) when is_atom(T); is_number(T); is_binary(T) -> true;
 portable_failure_reason([]) -> true;
@@ -593,14 +577,11 @@ predicate_failure_boundary({fail_with_reason,_Reason}, St) ->
 predicate_failure_boundary({get_fail_reasons,_Reasons}, St) ->
     St;
 predicate_failure_boundary(Goal,
-			   #est{cps=Cps,fail_boundaries=Count}=St) ->
+			   #est{cps=Cps}=St) ->
     case internal_predicate(Goal) of
 	true -> St;
-	false when Count < ?ERLOG_MAX_FAILURE_BOUNDARIES ->
-	    St#est{cps=[#cp{type=predicate_failure,data=Goal}|Cps],
-		   fail_boundaries=Count+1};
 	false ->
-	    mark_failure_reasons_truncated(St)
+	    St#est{cps=[#cp{type=predicate_failure,data=Goal}|Cps]}
     end.
 
 add_predicate_failure_reason(Goal, St) ->

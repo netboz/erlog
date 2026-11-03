@@ -122,14 +122,13 @@ get_fail_reasons_does_not_frame_itself_test() ->
     {fail, Final} = prove(Goal),
     ?assertEqual([], Final#est.fail_reasons).
 
-successful_call_boundaries_are_capped_test() ->
-    Goal = conjunction(lists:duplicate(?ERLOG_MAX_FAILURE_BOUNDARIES + 50,
+successful_call_boundaries_are_retained_test() ->
+    Goal = conjunction(lists:duplicate(256 + 50,
                                        {atom, ok})),
     {succeed, Final} = prove(Goal),
     Boundaries = [Cp || #cp{type=predicate_failure}=Cp <- Final#est.cps],
-    ?assertEqual(?ERLOG_MAX_FAILURE_BOUNDARIES, length(Boundaries)),
-    ?assertEqual(?ERLOG_MAX_FAILURE_BOUNDARIES, Final#est.fail_boundaries),
-    ?assert(Final#est.fail_reasons_truncated).
+    ?assertEqual(306, length(Boundaries)),
+    ?assertNot(Final#est.fail_reasons_truncated).
 
 non_ground_reason_is_error_test() ->
     ?assertMatch({erlog_error, instantiation_error, _},
@@ -139,30 +138,24 @@ non_portable_reason_is_error_test() ->
     ?assertMatch({erlog_error, {domain_error, failure_reason, _}, _},
                  catch prove({fail_with_reason, self()})).
 
-oversized_reason_is_truncated_test() ->
-    Reason = binary:copy(<<"x">>, ?ERLOG_MAX_FAILURE_REASON_BYTES + 1),
+large_reason_is_preserved_test() ->
+    Reason = binary:copy(<<"x">>, 4096 + 1),
     {fail, Final} = prove({fail_with_reason, Reason}),
-    ?assertEqual([fail_reasons_truncated], Final#est.fail_reasons),
-    ?assertEqual(1, Final#est.fail_reason_count).
+    ?assertEqual([Reason], Final#est.fail_reasons).
 
-outer_frames_survive_an_inner_truncation_test() ->
-    Oversized = binary:copy(<<"x">>, ?ERLOG_MAX_FAILURE_REASON_BYTES + 1),
+outer_frames_preserve_a_large_inner_reason_test() ->
+    Oversized = binary:copy(<<"x">>, 4096 + 1),
     Inner = erlog_int:add_failure_reason(Oversized, state()),
     Outer = erlog_int:add_failure_reason({outer, failed}, Inner),
-    ?assertEqual([{outer, failed}, fail_reasons_truncated],
-                 Outer#est.fail_reasons),
-    ?assertEqual(2, Outer#est.fail_reason_count).
+    ?assertEqual([{outer, failed}, Oversized], Outer#est.fail_reasons).
 
-total_reason_stack_is_bounded_test() ->
+total_reason_stack_is_preserved_test() ->
     Reason = binary:copy(<<"x">>, 4000),
     Final = lists:foldl(
               fun(N, St) -> erlog_int:add_failure_reason({reason, N, Reason}, St) end,
               state(), lists:seq(1, 10)),
-    ?assert(erlang:external_size(Final#est.fail_reasons) =<
-                ?ERLOG_MAX_FAILURE_REASONS_BYTES),
-    ?assert(Final#est.fail_reason_count =< ?ERLOG_MAX_FAILURE_REASONS),
-    ?assert(Final#est.fail_reasons_truncated),
-    ?assert(lists:member(fail_reasons_truncated, Final#est.fail_reasons)).
+    ?assertEqual([{reason, N, Reason} || N <- lists:seq(10, 1, -1)], Final#est.fail_reasons),
+    ?assertNot(Final#est.fail_reasons_truncated).
 
 custom_stack_policy_truncates_at_creation_test() ->
     St0 = erlog_int:set_failure_reason_policy(
@@ -170,7 +163,7 @@ custom_stack_policy_truncates_at_creation_test() ->
     St1 = erlog_int:add_failure_reason(first, St0),
     St2 = erlog_int:add_failure_reason(second, St1),
     ?assertEqual([fail_reasons_truncated, first], St2#est.fail_reasons),
-    ?assertEqual(2, St2#est.fail_reason_count),
+
     ?assert(St2#est.fail_reasons_truncated).
 
 remote_merge_preserves_order_and_bounds_test() ->
@@ -181,8 +174,8 @@ remote_merge_preserves_order_and_bounds_test() ->
     ?assertMatch({ok, _}, erlog_int:merge_failure_reasons([Opaque], Local)),
     ?assertEqual(error, erlog_int:merge_failure_reasons([{'Unbound'}], Local)),
     ?assertEqual(error, erlog_int:merge_failure_reasons([self()], Local)),
-    Oversized = binary:copy(<<"x">>, ?ERLOG_MAX_FAILURE_REASON_BYTES + 1),
-    ?assertEqual(error, erlog_int:merge_failure_reasons([Oversized], Local)).
+    Oversized = binary:copy(<<"x">>, 4096 + 1),
+    ?assertMatch({ok, _}, erlog_int:merge_failure_reasons([Oversized], Local)).
 
 prove(Goal) -> erlog_int:prove_goal(Goal, state()).
 

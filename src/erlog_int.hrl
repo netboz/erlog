@@ -25,13 +25,6 @@
 -define(IS_ATOMIC(T), (not (is_tuple(T) orelse (is_list(T) andalso T /= [])))).
 -define(IS_FUNCTOR(T), (is_tuple(T) andalso (tuple_size(T) >= 2) andalso is_atom(element(1, T)))).
 
-%% Failure diagnostics are transient interpreter state. Keep the complete stack
-%% comfortably below users such as quod's 1 MiB proof-answer frame.
--define(ERLOG_MAX_FAILURE_REASON_BYTES, 4096).
--define(ERLOG_MAX_FAILURE_REASONS_BYTES, 32768).
--define(ERLOG_MAX_FAILURE_REASONS, 256).
--define(ERLOG_MAX_FAILURE_BOUNDARIES, 256).
-
 %% Define the interpreter state record.
 -record(est, {cps,				%Choice points
 	      bs,				%Bindings
@@ -39,11 +32,9 @@
 	      db,				%Database
 	      fs,				%Flags
 	      fail_reasons = [],		%Newest explicit failure reason first
-	      fail_reason_count = 0,		%Explicit + automatic entries retained above
 	      fail_reasons_truncated = false,	%Whether omissions are represented
-	      fail_boundaries = 0,		%Diagnostic boundaries created this proof
 	      %% Application-owned admission for the complete reason stack.  The
-	      %% default uses Erlog's native portable-term bounds; embedders may
+	      %% default checks native portable terms; embedders may
 	      %% install a stricter wire-compatible policy without Erlog depending
 	      %% on their codec.
 	      fail_reason_policy = native,
