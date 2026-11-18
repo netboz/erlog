@@ -9,36 +9,36 @@ direct_failure_reason_test() ->
     {fail, Final} = prove({fail_with_reason, impossible_to_link}),
     ?assertEqual([impossible_to_link], Final#est.fail_reasons).
 
-standard_predicate_gets_default_reason_test() ->
+ordinary_predicate_failure_has_no_reason_test() ->
     {fail, Final} = prove({atom, 42}),
-    ?assertEqual([{atom, 42}], Final#est.fail_reasons).
+    ?assertEqual([], Final#est.fail_reasons).
 
-nested_predicates_form_failure_trace_test() ->
+nested_ordinary_failures_have_no_reasons_test() ->
     St = clauses([
           {':-', {inner, {'X'}}, {atom, {'X'}}},
           {':-', {outer, {'X'}}, {inner, {'X'}}}
          ]),
     {fail, Final} = erlog_int:prove_goal({outer, 42}, St),
-    ?assertEqual([{outer, 42}, {inner, 42}, {atom, 42}],
+    ?assertEqual([],
                  Final#est.fail_reasons).
 
-explicit_reason_is_root_cause_of_trace_test() ->
+only_explicit_reason_is_retained_test() ->
     St = clauses([
           {':-', {inner, {'X'}},
            {fail_with_reason, {impossible_to_link, {'X'}}}},
           {':-', {outer, {'X'}}, {inner, {'X'}}}
          ]),
     {fail, Final} = erlog_int:prove_goal({outer, bob}, St),
-    ?assertEqual([{outer, bob}, {inner, bob}, {impossible_to_link, bob}],
+    ?assertEqual([{impossible_to_link, bob}],
                  Final#est.fail_reasons).
 
-internal_predicates_do_not_pollute_failure_trace_test() ->
+internal_and_public_wrappers_add_no_reasons_test() ->
     St = clauses([
           {':-', {'$internal_cleanup', {'X'}}, fail},
           {':-', {outer, {'X'}}, {'$internal_cleanup', {'X'}}}
          ]),
     {fail, Final} = erlog_int:prove_goal({outer, 42}, St),
-    ?assertEqual([{outer, 42}], Final#est.fail_reasons).
+    ?assertEqual([], Final#est.fail_reasons).
 
 ecall_is_not_available_test() ->
     erase(ecall_executed),
@@ -48,17 +48,17 @@ ecall_is_not_available_test() ->
        catch prove({ecall, Call, {'Result'}})),
     ?assertEqual(undefined, get(ecall_executed)).
 
-unbound_default_arguments_are_frozen_test() ->
+unbound_unknown_call_adds_no_reason_test() ->
     {succeed, UnknownFails} = erlog_int:prove_goal(
                                 {set_prolog_flag, unknown, fail}, state()),
     {fail, Final} = erlog_int:prove_goal({missing, {'X'}}, UnknownFails),
-    ?assertEqual([{missing, unbound}], Final#est.fail_reasons).
+    ?assertEqual([], Final#est.fail_reasons).
 
-non_prolog_default_arguments_are_sanitized_test() ->
+non_prolog_unknown_call_adds_no_reason_test() ->
     {succeed, UnknownFails} = erlog_int:prove_goal(
                                 {set_prolog_flag, unknown, fail}, state()),
     {fail, Final} = erlog_int:prove_goal({missing, self()}, UnknownFails),
-    ?assertEqual([{missing, opaque}], Final#est.fail_reasons).
+    ?assertEqual([], Final#est.fail_reasons).
 
 backtracking_fallback_reads_reason_test() ->
     Goal = {';',
@@ -102,33 +102,35 @@ findall_retains_explicit_reason_test() ->
     ?assertEqual([], value('Found', Final)),
     ?assertEqual([generator_failure], value('Reasons', Final)).
 
-successful_negation_retains_automatic_trace_test() ->
+successful_negation_adds_no_automatic_reason_test() ->
     Goal = {',',
             {'\\+', {atom, 42}},
             {get_fail_reasons, {'Reasons'}}},
     {succeed, Final} = prove(Goal),
-    ?assertEqual([{atom, 42}], value('Reasons', Final)).
+    ?assertEqual([], value('Reasons', Final)).
 
-successful_findall_retains_automatic_trace_test() ->
+successful_findall_adds_no_automatic_reason_test() ->
     Goal = {',',
             {findall, {'X'}, {atom, 42}, {'Found'}},
             {get_fail_reasons, {'Reasons'}}},
     {succeed, Final} = prove(Goal),
     ?assertEqual([], value('Found', Final)),
-    ?assertEqual([{atom, 42}], value('Reasons', Final)).
+    ?assertEqual([], value('Reasons', Final)).
 
 get_fail_reasons_does_not_frame_itself_test() ->
     Goal = {',', {get_fail_reasons, {'Reasons'}}, fail},
     {fail, Final} = prove(Goal),
     ?assertEqual([], Final#est.fail_reasons).
 
-successful_call_boundaries_are_retained_test() ->
+successful_calls_and_exhaustion_add_no_reasons_test() ->
     Goal = conjunction(lists:duplicate(256 + 50,
                                        {atom, ok})),
     {succeed, Final} = prove(Goal),
-    Boundaries = [Cp || #cp{type=predicate_failure}=Cp <- Final#est.cps],
-    ?assertEqual(306, length(Boundaries)),
-    ?assertNot(Final#est.fail_reasons_truncated).
+    ?assertEqual([], Final#est.cps),
+    ?assertEqual([], Final#est.fail_reasons),
+    {fail, Exhausted} = erlog_int:fail(Final),
+    ?assertEqual([], Exhausted#est.fail_reasons),
+    ?assertNot(Exhausted#est.fail_reasons_truncated).
 
 non_ground_reason_is_error_test() ->
     ?assertMatch({erlog_error, instantiation_error, _},
@@ -143,7 +145,7 @@ large_reason_is_preserved_test() ->
     {fail, Final} = prove({fail_with_reason, Reason}),
     ?assertEqual([Reason], Final#est.fail_reasons).
 
-outer_frames_preserve_a_large_inner_reason_test() ->
+explicit_host_insertions_preserve_a_large_reason_test() ->
     Oversized = binary:copy(<<"x">>, 4096 + 1),
     Inner = erlog_int:add_failure_reason(Oversized, state()),
     Outer = erlog_int:add_failure_reason({outer, failed}, Inner),

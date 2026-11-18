@@ -135,21 +135,9 @@ the deps section of your rebar config file.
 
 ## Testing
 
-Erlog is tested to work with Erlang versions R14B02 - 17, the tests
-are both eunit tests and quick-check properties, if you do not have
-quickcheck don't worry you can still use Erlog, you just won't be able
-to run the properties.
-
-If you want to run the tests you will need to install quickcheck mini
-(Or the full quickcheck) you can do this with these commands:
-
-````bash
-   wget http://www.quviq.com/downloads/eqcmini.zip
-   unzip eqcmini.zip
-   export ERL_LIBS=eqcmini:$ERL_LIBS
-````
-
-to run the tests then run `rebar eunit`
+Run `rebar3 eunit` for the EUnit suite and the generated record get/set
+properties. The test profile uses PropEr 1.5.0; each property runs 100 cases.
+PropEr is a test-only dependency.
 
 ## Licence 
 

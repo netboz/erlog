@@ -99,13 +99,20 @@ database and a goal is entered.
 
 FAILURE DIAGNOSTICS
 
-fail_with_reason(Reason) records a ground diagnostic term and immediately
-fails. get_fail_reasons(Reasons) unifies Reasons with the current proof's
-bounded failure stack. Ordinary exhausted predicates add their call term
-automatically. The stack is retained through backtracking, cuts, negation and
-findall so a later alternative can inspect it; a new top-level proof resets it.
-When either the reason-byte limit or the automatic-call boundary limit is
-reached, fail_reasons_truncated appears once in the stack.
+fail_with_reason(Reason) resolves and records a ground portable diagnostic term
+and immediately fails. A non-ground term raises instantiation_error; a
+non-portable term raises domain_error(failure_reason, Term).
+get_fail_reasons(Reasons) unifies Reasons with the complete current proof's
+newest-first failure list without adding or clearing reasons. Ordinary failed
+or exhausted predicates add nothing. Reasons survive backtracking, cut,
+negation and findall; a new top-level proof starts with an empty list.
+
+Native admission has no byte, entry-count or nesting-depth quota. Host admission
+callbacks retain their existing separate API. The reserved atom
+fail_reasons_truncated retains its existing marker behavior and appears at most
+once when explicitly recorded or when a host admission policy rejects an
+entry. It is not an ordinary application reason. Removing automatic boundaries
+does not introduce a truncation policy.
 
 ERLANG INTERFACE
 

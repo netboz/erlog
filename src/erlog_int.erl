@@ -551,67 +551,22 @@ prove_goal(G0, Next, #est{bs=Bs,db=Db}=St) ->
     try get_procedure(functor(G), Db) of
 	built_in ->
             observe({native, erlog_bips, prove_goal, functor(G)}, St),
-            erlog_bips:prove_goal(G, Next, predicate_failure_boundary(G, St));
+            erlog_bips:prove_goal(G, Next, St);
 	{code,{Mod,Func}} ->
             observe({native, Mod, Func, functor(G)}, St),
-            Mod:Func(G, Next, predicate_failure_boundary(G, St));
-	{clauses,Cs} -> prove_goal_clauses(G, Cs, Next, predicate_failure_boundary(G, St));
+            Mod:Func(G, Next, St);
+	{clauses,Cs} -> prove_goal_clauses(G, Cs, Next, St);
 	undefined ->
 	    case get_prolog_flag(unknown, St) of
 		error ->			%Throw error
 		    existence_error(procedure, pred_ind(functor(G)), St);
 		_ ->				%Fail or warning
-		    ?FAIL(add_predicate_failure_reason(G, St))
+		    ?FAIL(St)
 	    end
     catch
 	throw:{erlog_error,E} ->
 	    erlog_error(E, St)	                %Add state to error
     end.
-
-%% A predicate's own alternatives sit above this boundary. Only when all of
-%% them (and every continuation they can satisfy) are exhausted does failure
-%% reach the boundary and add the call to the diagnostic stack. Store the
-%% already-dereferenced call by reference and freeze it only if the boundary is
-%% reached; successful calls therefore do not deep-copy their arguments.
-%%
-%% The two diagnostic built-ins do not describe application-level failures and
-%% therefore do not frame themselves.
-predicate_failure_boundary({fail_with_reason,_Reason}, St) ->
-    St;
-predicate_failure_boundary({get_fail_reasons,_Reasons}, St) ->
-    St;
-predicate_failure_boundary(Goal,
-			   #est{cps=Cps}=St) ->
-    case internal_predicate(Goal) of
-	true -> St;
-	false ->
-	    St#est{cps=[#cp{type=predicate_failure,data=Goal}|Cps]}
-    end.
-
-add_predicate_failure_reason(Goal, St) ->
-    case internal_predicate(Goal) of
-	true -> St;
-	false -> add_failure_reason(freeze_failure_term(Goal), St)
-    end.
-
-%% '$'-prefixed predicates are interpreter/application plumbing, not calls a
-%% Prolog author can usefully diagnose. Their enclosing public predicate still
-%% contributes the meaningful failure frame.
-internal_predicate(Goal) ->
-    {Name,_Arity} = functor(Goal),
-    case atom_to_binary(Name, utf8) of
-	<<$$,_/binary>> -> true;
-	_ -> false
-    end.
-
-freeze_failure_term({_Variable}) -> unbound;
-freeze_failure_term([H|T]) ->
-    [freeze_failure_term(H)|freeze_failure_term(T)];
-freeze_failure_term([]) -> [];
-freeze_failure_term(T) when ?IS_FUNCTOR(T) ->
-    list_to_tuple([freeze_failure_term(E) || E <- tuple_to_list(T)]);
-freeze_failure_term(T) when is_atom(T); is_number(T); is_binary(T) -> T;
-freeze_failure_term(_) -> opaque.
 
 fail_disjunction(#cp{next=Next,bs=Bs,vn=Vn}, Cps, St) ->
     prove_body(Next, St#est{cps=Cps,bs=Bs,vn=Vn}).
@@ -663,9 +618,7 @@ fail_choicepoint(#cp{type=current_prolog_flag}=Cp, Cps, St) ->
     fail_current_prolog_flag(Cp, Cps, St);
 fail_choicepoint(#cp{type=compiled,data=F}=Cp, Cps, St) ->
     observe(native_continuation, St),
-    F(Cp, Cps, St);
-fail_choicepoint(#cp{type=predicate_failure,data=Goal}, Cps, St) ->
-    fail(Cps, add_predicate_failure_reason(Goal, St)).
+    F(Cp, Cps, St).
 
 cut(Label, Last, Next, #est{cps=Cps}=St) ->
     cut(Label, Last, Next, Cps, St).
@@ -1539,19 +1492,48 @@ deref_list(Other, _) -> type_error(list, Other).
 %% Do a deep dereference. Completely dereference all the variables
 %% occuring in a term, even those occuring in a variables value.
 
-dderef(A, _) when ?IS_CONSTANT(A) -> A;
-dderef([], _) -> [];
-dderef([H0|T0], Bs) ->
-    [dderef(H0, Bs)|dderef(T0, Bs)];
-dderef({V}=Var, Bs) ->
-    case ?GET_BINDING(V, Bs) of
-	{ok,T} -> dderef(T, Bs);
-	error -> Var
+dderef(Term, Bs) ->
+    dereferenced(Term, dderef_changed(Term, Bs)).
+
+%% Traverse once to resolve variables. An unchanged subtree remains the
+%% caller's immutable term; rebuild only ancestors of resolved variables.
+%% This preserves sharing without an extra groundness or equality walk.
+dderef_changed(A, _) when ?IS_CONSTANT(A) -> unchanged;
+dderef_changed([], _) -> unchanged;
+dderef_changed([H|T], Bs) ->
+    case {dderef_changed(H, Bs), dderef_changed(T, Bs)} of
+        {unchanged, unchanged} -> unchanged;
+        {Head, Tail} -> {changed, [dereferenced(H, Head)|dereferenced(T, Tail)]}
     end;
-dderef(T, Bs) when is_tuple(T) ->
-    Es0 = tuple_to_list(T),
-    Es1 = dderef(Es0, Bs),
-    list_to_tuple(Es1).
+dderef_changed({V}, Bs) ->
+    case ?GET_BINDING(V, Bs) of
+        {ok,T} -> {changed, dderef(T, Bs)};
+        error -> unchanged
+    end;
+dderef_changed(T, Bs) when is_tuple(T) ->
+    case dderef_elements(T, 1, tuple_size(T), Bs) of
+        unchanged -> unchanged;
+        {changed, Es} -> {changed, list_to_tuple(Es)}
+    end.
+
+dereferenced(Term, unchanged) -> Term;
+dereferenced(_Term, {changed, Value}) -> Value.
+
+%% Allocate an element list only when something changed. Copying the already
+%% visited unchanged suffix reads tuple slots, never traverses their values.
+dderef_elements(_T, I, Size, _Bs) when I > Size -> unchanged;
+dderef_elements(T, I, Size, Bs) ->
+    E = element(I, T),
+    case {dderef_changed(E, Bs), dderef_elements(T, I+1, Size, Bs)} of
+        {unchanged, unchanged} -> unchanged;
+        {Value, unchanged} ->
+            {changed, [dereferenced(E, Value)|tuple_suffix(T, I+1, Size)]};
+        {Value, {changed, Rest}} ->
+            {changed, [dereferenced(E, Value)|Rest]}
+    end.
+
+tuple_suffix(_T, I, Size) when I > Size -> [];
+tuple_suffix(T, I, Size) -> [element(I, T)|tuple_suffix(T, I+1, Size)].
 
 %% dderef_list(List, Bindings) -> List.
 %%  Dereference all variables to any depth but check that the
